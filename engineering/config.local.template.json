@@ -1,0 +1,67 @@
+{
+  "extends": "config.global.json",
+  "local_overrides": {
+    "editor": "${EDITOR:-nvim}",
+    "test_runner": "${TEST_RUNNER:-jest}",
+    "git_hooks": "${GIT_HOOKS:-enabled}",
+    "validation_level": "${VALIDATION_LEVEL:-strict}",
+    "notification_level": "${NOTIFICATION_LEVEL:-verbose}"
+  },
+  "project_specifics": {
+    "main_files": [
+      "src/main.js",
+      "main.js",
+      "index.js",
+      "src/index.js"
+    ],
+    "test_directories": [
+      "test/",
+      "tests/",
+      "__tests__/"
+    ],
+    "documentation_files": [
+      "LEARNINGS.md",
+      "CLAUDE.md",
+      "ENGINEERING_STANDARDS.md",
+      "DEV_NARRATIVE.md",
+      "ENGINEERING_ETHOS.md",
+      "README.md",
+      "ARCHITECTURE.md",
+      "TESTING-STRATEGY.md"
+    ],
+    "config_files": [
+      "package.json",
+      "manifest.json",
+      "data.json",
+      ".engineering/",
+      "Makefile"
+    ]
+  },
+  "pattern_integration": {
+    "claude_patterns_registry": "~/.claude/patterns/registry.json",
+    "evidence_scoring_enabled": true,
+    "pattern_extraction_enabled": true,
+    "learnings_md_tracking": true
+  },
+  "workflow_customization": {
+    "investigation_template": "CRITICAL_BUG_INVESTIGATION.md",
+    "commit_template": ".gitmessage",
+    "pr_template": ".github/pull_request_template.md",
+    "issue_template": ".github/ISSUE_TEMPLATE/"
+  },
+  "automation_preferences": {
+    "auto_run_smoke_tests": true,
+    "auto_validate_commits": true,
+    "auto_update_documentation": true,
+    "auto_check_learnings": true,
+    "auto_extract_patterns": true,
+    "auto_update_evidence_scores": true
+  },
+  "development_environment": {
+    "node_version": "${NODE_VERSION:-18}",
+    "npm_registry": "${NPM_REGISTRY:-https://registry.npmjs.org}",
+    "git_user": "${GIT_USER_NAME}",
+    "git_email": "${GIT_USER_EMAIL}",
+    "claude_global_config": "~/.claude/"
+  }
+}

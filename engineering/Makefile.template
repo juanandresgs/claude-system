@@ -1,0 +1,333 @@
+# Engineering Ethos Makefile Template
+# Enhanced automation for systematic engineering practices
+# Version: 2.0 - Evidence-based with pattern integration
+
+# Configuration - Override in local Makefile if needed
+PROJECT_NAME ?= $(shell basename $(CURDIR))
+CLAUDE_GLOBAL ?= $(HOME)/.claude
+NODE_VERSION ?= 18
+TEST_TIMEOUT ?= 30000
+
+# Color output
+RED := \033[0;31m
+GREEN := \033[0;32m
+YELLOW := \033[1;33m
+BLUE := \033[0;34m
+PURPLE := \033[0;35m
+NC := \033[0m
+
+# Default target
+.PHONY: help
+help: ## Show this help message
+	@echo "$(BLUE)Engineering Ethos Makefile - $(PROJECT_NAME)$(NC)"
+	@echo ""
+	@echo "$(GREEN)Core Engineering Commands:$(NC)"
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(BLUE)%-15s$(NC) %s\n", $$1, $$2}'
+	@echo ""
+	@echo "$(GREEN)Engineering Ethos Four Pillars:$(NC)"
+	@echo "  1. $(PURPLE)Learnings-First Development$(NC) - Always consult LEARNINGS.md"
+	@echo "  2. $(PURPLE)Test-Driven Protection$(NC) - Critical paths require 100% coverage"
+	@echo "  3. $(PURPLE)Documentation-as-Code$(NC) - Keep documentation current"
+	@echo "  4. $(PURPLE)Proactive Architecture$(NC) - Think deep, implement prevention"
+
+# Setup and Installation
+.PHONY: setup
+setup: ## Initialize Engineering Ethos for this project
+	@echo "$(BLUE)🏗️ Setting up Engineering Ethos for $(PROJECT_NAME)...$(NC)"
+	@if [ -f "$(CLAUDE_GLOBAL)/engineering/setup.sh" ]; then \
+		"$(CLAUDE_GLOBAL)/engineering/setup.sh" "$(CURDIR)"; \
+	else \
+		echo "$(RED)❌ Engineering Ethos setup script not found$(NC)"; \
+		echo "$(YELLOW)Run: ~/.claude/engineering/setup.sh $(CURDIR)$(NC)"; \
+		exit 1; \
+	fi
+	@echo "$(GREEN)✅ Engineering Ethos setup complete$(NC)"
+
+.PHONY: install
+install: setup ## Install dependencies and setup project
+	@echo "$(BLUE)📦 Installing dependencies...$(NC)"
+	@if [ -f "package.json" ]; then \
+		npm install; \
+	else \
+		echo "$(YELLOW)⚠️ No package.json found - skipping npm install$(NC)"; \
+	fi
+
+# Validation and Quality
+.PHONY: validate
+validate: validate-syntax validate-tests validate-docs validate-patterns ## Run complete validation suite
+	@echo "$(GREEN)✅ All validations passed$(NC)"
+
+.PHONY: validate-syntax
+validate-syntax: ## Validate syntax of all source files
+	@echo "$(BLUE)🔧 Validating syntax...$(NC)"
+	@find . -name "*.js" -not -path "./node_modules/*" -exec node -c {} \; 2>/dev/null || (echo "$(RED)❌ JavaScript syntax errors detected$(NC)" && exit 1)
+	@find . -name "*.json" -not -path "./node_modules/*" -exec python -m json.tool {} /dev/null \; 2>/dev/null || (echo "$(RED)❌ JSON syntax errors detected$(NC)" && exit 1)
+	@echo "$(GREEN)✅ Syntax validation passed$(NC)"
+
+.PHONY: validate-tests
+validate-tests: ## Validate test configuration and coverage
+	@echo "$(BLUE)🧪 Validating test configuration...$(NC)"
+	@if [ -f "package.json" ]; then \
+		if grep -q '"test"' package.json; then \
+			echo "$(GREEN)✅ Test script configured$(NC)"; \
+		else \
+			echo "$(YELLOW)⚠️ No test script in package.json$(NC)"; \
+		fi; \
+		if grep -q '"test:smoke"' package.json; then \
+			echo "$(GREEN)✅ Smoke tests configured$(NC)"; \
+		else \
+			echo "$(YELLOW)⚠️ No smoke tests configured$(NC)"; \
+		fi; \
+		if grep -q '"test:critical"' package.json; then \
+			echo "$(GREEN)✅ Critical tests configured$(NC)"; \
+		else \
+			echo "$(YELLOW)⚠️ No critical tests configured$(NC)"; \
+		fi; \
+	else \
+		echo "$(RED)❌ package.json not found$(NC)"; \
+		exit 1; \
+	fi
+
+.PHONY: validate-docs
+validate-docs: ## Validate documentation completeness
+	@echo "$(BLUE)📋 Validating documentation...$(NC)"
+	@MISSING=0; \
+	for doc in LEARNINGS.md README.md; do \
+		if [ ! -f "$$doc" ]; then \
+			echo "$(RED)❌ Missing: $$doc$(NC)"; \
+			MISSING=$$((MISSING + 1)); \
+		else \
+			LINES=$$(wc -l < "$$doc" 2>/dev/null || echo "0"); \
+			if [ "$$LINES" -lt 5 ]; then \
+				echo "$(YELLOW)⚠️ $$doc exists but appears minimal ($$LINES lines)$(NC)"; \
+			else \
+				echo "$(GREEN)✅ $$doc exists with content ($$LINES lines)$(NC)"; \
+			fi; \
+		fi; \
+	done; \
+	if [ $$MISSING -gt 0 ]; then \
+		echo "$(RED)❌ $$MISSING required documentation files missing$(NC)"; \
+		exit 1; \
+	fi
+
+.PHONY: validate-patterns
+validate-patterns: ## Validate pattern extraction integration
+	@echo "$(BLUE)🎯 Validating pattern integration...$(NC)"
+	@if [ -f "$(CLAUDE_GLOBAL)/patterns/registry.json" ]; then \
+		PROJECT_COUNT=$$(jq -r '.projects | length' "$(CLAUDE_GLOBAL)/patterns/registry.json" 2>/dev/null || echo "0"); \
+		echo "$(GREEN)✅ Pattern registry found with $$PROJECT_COUNT projects$(NC)"; \
+		if jq -r ".projects[] | select(.name == \"$(PROJECT_NAME)\") | .name" "$(CLAUDE_GLOBAL)/patterns/registry.json" 2>/dev/null | grep -q "$(PROJECT_NAME)"; then \
+			echo "$(GREEN)✅ Current project registered in pattern system$(NC)"; \
+		else \
+			echo "$(YELLOW)⚠️ Current project not in pattern registry$(NC)"; \
+			echo "$(YELLOW)   Run: make extract-patterns$(NC)"; \
+		fi; \
+	else \
+		echo "$(YELLOW)⚠️ Pattern registry not found$(NC)"; \
+		echo "$(YELLOW)   Initialize with: $(CLAUDE_GLOBAL)/scripts/extract-local-patterns.sh .$(NC)"; \
+	fi
+
+# Testing
+.PHONY: test
+test: ## Run all tests
+	@echo "$(BLUE)🧪 Running all tests...$(NC)"
+	@if [ -f "package.json" ] && grep -q '"test"' package.json; then \
+		npm test; \
+	else \
+		echo "$(YELLOW)⚠️ No test configuration found$(NC)"; \
+		exit 1; \
+	fi
+
+.PHONY: test-smoke
+test-smoke: ## Run smoke tests (fast validation)
+	@echo "$(BLUE)💨 Running smoke tests...$(NC)"
+	@if [ -f "package.json" ] && grep -q '"test:smoke"' package.json; then \
+		npm run test:smoke; \
+	else \
+		echo "$(YELLOW)⚠️ No smoke tests configured$(NC)"; \
+		echo "$(YELLOW)   Add 'test:smoke' script to package.json$(NC)"; \
+	fi
+
+.PHONY: test-critical
+test-critical: ## Run critical path tests
+	@echo "$(BLUE)🚨 Running critical tests...$(NC)"
+	@if [ -f "package.json" ] && grep -q '"test:critical"' package.json; then \
+		npm run test:critical; \
+	else \
+		echo "$(YELLOW)⚠️ No critical tests configured$(NC)"; \
+		echo "$(YELLOW)   Add 'test:critical' script to package.json$(NC)"; \
+	fi
+
+.PHONY: test-coverage
+test-coverage: ## Run tests with coverage analysis
+	@echo "$(BLUE)📊 Running test coverage analysis...$(NC)"
+	@if [ -f "package.json" ]; then \
+		if npm test -- --coverage 2>/dev/null; then \
+			echo "$(GREEN)✅ Coverage analysis complete$(NC)"; \
+			if [ -d "coverage" ]; then \
+				echo "$(BLUE)📋 Coverage report: coverage/lcov-report/index.html$(NC)"; \
+			fi; \
+		else \
+			echo "$(YELLOW)⚠️ Coverage analysis not available$(NC)"; \
+			npm test; \
+		fi; \
+	else \
+		echo "$(RED)❌ package.json not found$(NC)"; \
+		exit 1; \
+	fi
+
+# Development Workflows
+.PHONY: investigate
+investigate: ## Start critical bug investigation workflow
+	@echo "$(BLUE)🕵️ Starting critical bug investigation...$(NC)"
+	@ISSUE="$(filter-out $@,$(MAKECMDGOALS))"; \
+	if [ -z "$$ISSUE" ]; then \
+		echo "$(RED)❌ Usage: make investigate ISSUE='description'$(NC)"; \
+		exit 1; \
+	fi; \
+	echo "$(BLUE)📋 Issue: $$ISSUE$(NC)"; \
+	echo "$(BLUE)📖 Consulting LEARNINGS.md...$(NC)"; \
+	if [ -f "LEARNINGS.md" ]; then \
+		echo "$(GREEN)✅ LEARNINGS.md found - review similar patterns$(NC)"; \
+		grep -n -i -A 2 -B 2 "$$(echo $$ISSUE | cut -d' ' -f1)" LEARNINGS.md || echo "$(YELLOW)⚠️ No similar patterns found$(NC)"; \
+	else \
+		echo "$(RED)❌ LEARNINGS.md not found$(NC)"; \
+	fi; \
+	if [ -f "$(CLAUDE_GLOBAL)/engineering/test-harness.sh" ]; then \
+		"$(CLAUDE_GLOBAL)/engineering/test-harness.sh" investigation "$$ISSUE"; \
+	fi
+
+.PHONY: fix-critical
+fix-critical: ## Apply critical bug fix workflow
+	@echo "$(BLUE)🚨 Starting critical bug fix workflow...$(NC)"
+	@$(MAKE) validate-tests
+	@$(MAKE) test-critical
+	@echo "$(GREEN)✅ Ready for critical bug fix implementation$(NC)"
+
+.PHONY: extract-patterns
+extract-patterns: ## Extract patterns to global registry
+	@echo "$(BLUE)🎯 Extracting patterns to global registry...$(NC)"
+	@if [ -f "$(CLAUDE_GLOBAL)/scripts/extract-local-patterns.sh" ]; then \
+		"$(CLAUDE_GLOBAL)/scripts/extract-local-patterns.sh" "$(CURDIR)"; \
+	else \
+		echo "$(RED)❌ Pattern extraction script not found$(NC)"; \
+		exit 1; \
+	fi
+
+# Git and Deployment
+.PHONY: pre-commit
+pre-commit: ## Run pre-commit validation
+	@echo "$(BLUE)🔍 Running pre-commit validation...$(NC)"
+	@if [ -f "$(CLAUDE_GLOBAL)/engineering/pre-commit-hook.sh" ]; then \
+		"$(CLAUDE_GLOBAL)/engineering/pre-commit-hook.sh"; \
+	else \
+		echo "$(RED)❌ Pre-commit hook not found$(NC)"; \
+		echo "$(YELLOW)Run: make setup$(NC)"; \
+		exit 1; \
+	fi
+
+.PHONY: install-hooks
+install-hooks: ## Install git hooks
+	@echo "$(BLUE)🪝 Installing git hooks...$(NC)"
+	@if [ -d ".git" ]; then \
+		if [ -f "$(CLAUDE_GLOBAL)/engineering/pre-commit-hook.sh" ]; then \
+			cp "$(CLAUDE_GLOBAL)/engineering/pre-commit-hook.sh" ".git/hooks/pre-commit"; \
+			chmod +x ".git/hooks/pre-commit"; \
+			echo "$(GREEN)✅ Pre-commit hook installed$(NC)"; \
+		else \
+			echo "$(RED)❌ Pre-commit hook not found$(NC)"; \
+			exit 1; \
+		fi; \
+	else \
+		echo "$(RED)❌ Not a git repository$(NC)"; \
+		exit 1; \
+	fi
+
+.PHONY: commit-template
+commit-template: ## Show commit message template
+	@echo "$(BLUE)📝 Commit Message Template:$(NC)"
+	@echo ""
+	@echo "$(GREEN)Type(scope): Brief description$(NC)"
+	@echo ""
+	@echo "$(YELLOW)Longer description explaining the change and its context.$(NC)"
+	@echo "$(YELLOW)Reference LEARNINGS.md patterns when applicable.$(NC)"
+	@echo ""
+	@echo "$(PURPLE)LEARNINGS.md: Applied pattern X.Y - <pattern description>$(NC)"
+	@echo "$(PURPLE)STANDARDS_COMPLIANCE: <compliance notes>$(NC)"
+	@echo "$(PURPLE)PREVENTION: <prevention mechanisms added>$(NC)"
+	@echo ""
+	@echo "$(BLUE)Example:$(NC)"
+	@echo "fix(layout): Fix pane width calculation in focus mode"
+	@echo ""
+	@echo "Resolves issue where 2-pane focus mode incorrectly calculated"
+	@echo "minimum widths, causing layout instability."
+	@echo ""
+	@echo "LEARNINGS.md: Applied pattern 4.6 - State validation checks"
+	@echo "PREVENTION: Added width calculation validation tests"
+
+# Status and Monitoring
+.PHONY: status
+status: ## Show project engineering status
+	@echo "$(BLUE)📊 Engineering Status for $(PROJECT_NAME):$(NC)"
+	@echo ""
+	@echo "$(GREEN)Documentation:$(NC)"
+	@[ -f "LEARNINGS.md" ] && echo "  ✅ LEARNINGS.md ($$(wc -l < LEARNINGS.md) lines)" || echo "  ❌ LEARNINGS.md missing"
+	@[ -f "README.md" ] && echo "  ✅ README.md ($$(wc -l < README.md) lines)" || echo "  ❌ README.md missing"
+	@echo ""
+	@echo "$(GREEN)Testing:$(NC)"
+	@[ -f "package.json" ] && grep -q '"test"' package.json && echo "  ✅ Test script configured" || echo "  ❌ No test script"
+	@[ -d "test" ] && echo "  ✅ Test directory exists ($$(find test -name '*.js' | wc -l) files)" || echo "  ❌ No test directory"
+	@echo ""
+	@echo "$(GREEN)Git:$(NC)"
+	@[ -f ".git/hooks/pre-commit" ] && echo "  ✅ Pre-commit hook installed" || echo "  ❌ Pre-commit hook not installed"
+	@echo ""
+	@echo "$(GREEN)Patterns:$(NC)"
+	@if [ -f "$(CLAUDE_GLOBAL)/patterns/registry.json" ]; then \
+		if jq -r ".projects[] | select(.name == \"$(PROJECT_NAME)\") | .name" "$(CLAUDE_GLOBAL)/patterns/registry.json" 2>/dev/null | grep -q "$(PROJECT_NAME)"; then \
+			echo "  ✅ Registered in global pattern registry"; \
+		else \
+			echo "  ❌ Not registered in pattern registry"; \
+		fi; \
+	else \
+		echo "  ❌ No global pattern registry found"; \
+	fi
+
+# Cleanup and Maintenance
+.PHONY: clean
+clean: ## Clean build artifacts and temporary files
+	@echo "$(BLUE)🧹 Cleaning build artifacts...$(NC)"
+	@rm -rf node_modules/.cache coverage .nyc_output dist build
+	@echo "$(GREEN)✅ Cleanup complete$(NC)"
+
+.PHONY: clean-deep
+clean-deep: clean ## Deep clean including dependencies
+	@echo "$(BLUE)🧹 Deep cleaning...$(NC)"
+	@rm -rf node_modules package-lock.json
+	@echo "$(GREEN)✅ Deep cleanup complete$(NC)"
+
+# Development Environment
+.PHONY: dev-setup
+dev-setup: install install-hooks ## Complete development setup
+	@echo "$(GREEN)✅ Development environment setup complete$(NC)"
+	@$(MAKE) status
+
+# Allow string arguments to be passed to investigate target
+%:
+	@:
+
+# Prevent make from interpreting arguments as filenames
+.PHONY: $(filter-out help setup install validate validate-syntax validate-tests validate-docs validate-patterns test test-smoke test-critical test-coverage investigate fix-critical extract-patterns pre-commit install-hooks commit-template status clean clean-deep dev-setup, $(MAKECMDGOALS))
+
+# Default pattern-based rules for common engineering workflows
+pattern-%.md:
+	@echo "$(BLUE)📋 Creating $@ from pattern template...$(NC)"
+	@if [ -f "$(CLAUDE_GLOBAL)/templates/$@" ]; then \
+		cp "$(CLAUDE_GLOBAL)/templates/$@" "$@"; \
+		echo "$(GREEN)✅ $@ created from template$(NC)"; \
+	else \
+		echo "$(YELLOW)⚠️ Template for $@ not found, creating minimal version$(NC)"; \
+		echo "# $@" > "$@"; \
+		echo "" >> "$@"; \
+		echo "This file was auto-generated by Engineering Ethos." >> "$@"; \
+		echo "Please update with actual content." >> "$@"; \
+	fi

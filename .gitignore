@@ -1,0 +1,65 @@
+# Claude System .gitignore
+
+# Data directories (large, user-specific content)
+projects/
+todos/
+shell-snapshots/
+backups/
+history/
+
+# Runtime and metrics
+reports/
+metrics/
+statsig/
+
+# Local configuration
+settings.local.json
+
+# Temporary files
+*.tmp
+*.log
+*.bak
+.DS_Store
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Python cache (if any Python scripts exist)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Node modules (if any Node.js tools exist)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Git temporary files
+*.orig
+*.rej
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock

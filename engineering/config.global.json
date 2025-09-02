@@ -1,0 +1,107 @@
+{
+  "engineering_ethos": {
+    "version": "1.0",
+    "documentation": "Single source of truth for engineering standards and repeatable development practices",
+    "philosophy": {
+      "critical_bugs": "immediate_ci_cd_failure",
+      "investigation": "architectural_deep_analysis",
+      "documentation": "zero_omissions_allowed",
+      "testing": "100_percent_critical_coverage"
+    },
+    "mandatory_workflows": {
+      "bug_investigation": [
+        "review_learnings_md_first",
+        "perform_holistic_rca",
+        "assess_architectural_vs_simple_fixes",
+        "apply_highest_standard_criteria"
+      ],
+      "solution_implementation": [
+        "think_really_hard_dig_deep",
+        "implement_prevention_mechanisms",
+        "achieve_complete_test_coverage",
+        "update_all_documentation"
+      ],
+      "quality_validation": [
+        "all_smoke_tests_pass",
+        "critical_bug_prevention_validated",
+        "documentation_completeness_verified",
+        "ci_cd_process_reviewed_improved"
+      ]
+    },
+    "file_standards": {
+      "always_check": [
+        "LEARNINGS.md",
+        "src/main.js",
+        "test/",
+        "package.json",
+        "ENGINEERING_STANDARDS.md",
+        "DEV_NARRATIVE.md",
+        "ENGINEERING_ETHOS.md"
+      ],
+      "always_validate": [
+        "syntax_check",
+        "smoke_tests",
+        "critical_bug_tests",
+        "git_status",
+        "documentation_completeness"
+      ],
+      "always_document": [
+        "LEARNINGS.md_patterns",
+        "commit_messages",
+        "test_coverage",
+        "prevention_mechanisms",
+        "architectural_decisions"
+      ]
+    },
+    "test_requirements": {
+      "critical_paths": {
+        "coverage": "100%",
+        "patterns": [
+          "**/*critical*.spec.js",
+          "**/extraction-*.spec.js",
+          "**/smoke-*.spec.js"
+        ],
+        "failure_action": "block_commit"
+      },
+      "smoke_tests": {
+        "coverage": "basic_functionality",
+        "run_frequency": "every_commit",
+        "failure_action": "block_merge"
+      },
+      "regression_tests": {
+        "coverage": "comprehensive",
+        "run_frequency": "pre_release",
+        "failure_action": "block_release"
+      }
+    },
+    "git_standards": {
+      "commit_format": {
+        "type": "required",
+        "description": "required",
+        "standards_compliance": "required_checklist",
+        "learnings_reference": "required",
+        "test_coverage": "required",
+        "prevention_mechanisms": "required"
+      },
+      "branch_naming": {
+        "investigation": "investigate/[issue-description]",
+        "critical_bug": "fix/critical-[bug-description]",
+        "architectural": "fix/architectural-[system-issue]",
+        "feature": "feature/[capability-name]",
+        "standards": "standards/[improvement-description]"
+      },
+      "hooks": {
+        "pre_commit": "enforce_standards_compliance",
+        "commit_msg": "validate_commit_format",
+        "pre_push": "validate_test_coverage"
+      }
+    },
+    "automation": {
+      "setup_command": "make setup",
+      "investigation_command": "make investigate ISSUE=\"description\"",
+      "critical_bug_command": "make critical-bug ISSUE=\"description\"",
+      "validation_command": "make validate-all",
+      "test_command": "make test-critical"
+    }
+  }
+}
