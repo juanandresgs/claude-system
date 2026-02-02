@@ -111,8 +111,8 @@
             "timeout": 5
           },
           {
-            "type": "prompt",
-            "prompt": "Evaluate if this bash command is safe. Check for: data destruction, credential exposure, writing to protected paths, unintended side effects. The command is: $ARGUMENTS\n\nReturn ok=true if safe, ok=false with reason if dangerous. Only flag genuinely dangerous commands, not normal development operations.",
+            "type": "agent",
+            "prompt": "You MUST respond ONLY with JSON: {\"ok\": true} or {\"ok\": false, \"reason\": \"...\"}. Evaluate if this bash command is safe. Check for: data destruction, credential exposure, writing to protected paths, unintended side effects. The command is: $ARGUMENTS. Only flag genuinely dangerous commands, not normal development operations.",
             "timeout": 10
           }
         ]
@@ -148,8 +148,8 @@
             "timeout": 300
           },
           {
-            "type": "prompt",
-            "prompt": "Review the file just written/edited. Check: 1) Does the file header accurately describe the file's purpose? 2) If the file is 50+ lines, does it have a @decision annotation with meaningful rationale? 3) Are function/method comments present for non-trivial logic? 4) Interaction check: include a brief reminder in your response to summarize this change to the user (what file, what changed, why). Context: $ARGUMENTS\n\nReturn ok=true if documentation is adequate, ok=false with specific improvement suggestions if not. Always append: 'Show the user: [filename] — [1-line summary of the change].'",
+            "type": "agent",
+            "prompt": "You MUST respond ONLY with JSON: {\"ok\": true} or {\"ok\": false, \"reason\": \"...\"}. Review the file just written/edited. Check: 1) Does the file header accurately describe the file's purpose? 2) If the file is 50+ lines, does it have a @decision annotation with meaningful rationale? 3) Are function/method comments present for non-trivial logic? If documentation is adequate, return {\"ok\": true}. If not, return {\"ok\": false, \"reason\": \"specific improvement suggestions\"}. Context: $ARGUMENTS",
             "timeout": 30
           }
         ]
@@ -183,8 +183,8 @@
         "matcher": "planner|Plan",
         "hooks": [
           {
-            "type": "prompt",
-            "prompt": "The Planner agent has finished producing a plan. Review the plan output for completeness: 1) Does it include clear requirements and definition of done? 2) Are architectural decisions documented with rationale? 3) Are git issues defined with phases? 4) Is there a worktree strategy? Context: $ARGUMENTS\n\nReturn ok=true if the plan is complete, ok=false with specific gaps if not.",
+            "type": "agent",
+            "prompt": "You MUST respond ONLY with JSON: {\"ok\": true} or {\"ok\": false, \"reason\": \"...\"}. The Planner agent has finished producing a plan. Review the plan output for completeness: 1) Does it include clear requirements and definition of done? 2) Are architectural decisions documented with rationale? 3) Are git issues defined with phases? 4) Is there a worktree strategy? If complete, return {\"ok\": true}. If gaps exist, return {\"ok\": false, \"reason\": \"specific gaps\"}. Context: $ARGUMENTS",
             "timeout": 30
           }
         ]
@@ -193,8 +193,8 @@
         "matcher": "implementer",
         "hooks": [
           {
-            "type": "prompt",
-            "prompt": "Check if the implementer's output includes: 1) A summary of what was built, 2) Test results showing it works, 3) Verification instructions the user can follow. If any of these are missing, return ok=false with specific feedback about what's needed.",
+            "type": "agent",
+            "prompt": "You MUST respond ONLY with JSON: {\"ok\": true} or {\"ok\": false, \"reason\": \"...\"}. Check if the implementer's output includes: 1) A summary of what was built, 2) Test results showing it works, 3) Verification instructions the user can follow. If all present, return {\"ok\": true}. If any are missing, return {\"ok\": false, \"reason\": \"specific feedback about what's needed\"}. Context: $ARGUMENTS",
             "timeout": 30
           }
         ]
@@ -203,8 +203,8 @@
         "matcher": "guardian",
         "hooks": [
           {
-            "type": "prompt",
-            "prompt": "The Guardian agent has finished. Verify completeness: 1) If a merge was performed, was MASTER_PLAN.md updated with the phase status and decision log? If merge happened but MASTER_PLAN.md was NOT modified, return ok=false with reason: 'Guardian must update MASTER_PLAN.md after merge: mark phase status, append decision log with @decision IDs from merged code.' 2) Were @decision annotations verified before any merge? 3) Was explicit user approval obtained before commits/merges? If no merge was performed (e.g., only worktree creation or branch management), these checks are not required — return ok=true. Context: $ARGUMENTS",
+            "type": "agent",
+            "prompt": "You MUST respond ONLY with JSON: {\"ok\": true} or {\"ok\": false, \"reason\": \"...\"}. The Guardian agent has finished. Verify completeness: 1) If a merge was performed, was MASTER_PLAN.md updated with the phase status and decision log? If merge happened but MASTER_PLAN.md was NOT modified, return {\"ok\": false, \"reason\": \"Guardian must update MASTER_PLAN.md after merge: mark phase status, append decision log with @decision IDs from merged code.\"}. 2) Were @decision annotations verified before any merge? 3) Was explicit user approval obtained before commits/merges? If no merge was performed (e.g., only worktree creation or branch management), these checks are not required — return {\"ok\": true}. Context: $ARGUMENTS",
             "timeout": 30
           }
         ]
@@ -235,8 +235,8 @@
             "timeout": 120
           },
           {
-            "type": "prompt",
-            "prompt": "Respond ONLY with JSON: {\"ok\": true} or {\"ok\": false, \"reason\": \"...\"}. Check the LAST paragraph of the assistant's response for forward motion. Forward motion means ANY of: a question mark (?), phrases like 'want me to', 'shall I', 'let me know', 'would you like', 'should I', or an explicit offer/suggestion for next steps. If the last paragraph contains ANY of these indicators, return ok=true. ONLY return ok=false if the response ends with a bare completion statement ('done', 'finished', 'completed', 'all set') with absolutely no question, offer, or suggestion in the final paragraph. When in doubt, return ok=true. Context: $ARGUMENTS",
+            "type": "agent",
+            "prompt": "You MUST respond ONLY with JSON: {\"ok\": true} or {\"ok\": false, \"reason\": \"...\"}. Check the LAST paragraph of the assistant's response for forward motion. Forward motion means ANY of: a question mark (?), phrases like 'want me to', 'shall I', 'let me know', 'would you like', 'should I', or an explicit offer/suggestion for next steps. If the last paragraph contains ANY of these indicators, return {\"ok\": true}. ONLY return {\"ok\": false, \"reason\": \"Response lacks forward motion\"} if the response ends with a bare completion statement ('done', 'finished', 'completed', 'all set') with absolutely no question, offer, or suggestion in the final paragraph. When in doubt, return {\"ok\": true}. Context: $ARGUMENTS",
             "timeout": 10
           }
         ]
