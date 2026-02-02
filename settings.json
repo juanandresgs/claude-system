@@ -49,29 +49,34 @@
       "Read(./*)",
       "WebFetch",
       "WebSearch",
-      "ida-pro-mcp *"
+      "mcp__ida-pro-mcp__*"
     ],
-    "deny": [
-      "Read(./.env*)",
-      "Read(./secrets/**)",
-      "Read(./**/credentials*)"
-    ],
+    "deny": ["Read(./.env*)", "Read(./secrets/**)", "Read(./**/credentials*)"],
     "ask": [],
     "defaultMode": "plan"
   },
   "enableAllProjectMcpServers": true,
-  "enabledMcpjsonServers": [
-    "context7"
-  ],
+  "enabledMcpjsonServers": ["context7", "ida-pro-mcp"],
   "hooks": {
     "SessionStart": [
       {
-        "matcher": "startup",
+        "matcher": "startup|resume|clear|compact",
         "hooks": [
           {
             "type": "command",
             "command": "$HOME/.claude/hooks/session-init.sh",
             "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/prompt-submit.sh",
+            "timeout": 5
           }
         ]
       }
@@ -99,6 +104,11 @@
             "type": "command",
             "command": "$HOME/.claude/hooks/guard.sh",
             "timeout": 5
+          },
+          {
+            "type": "prompt",
+            "prompt": "Evaluate if this bash command is safe. Check for: data destruction, credential exposure, writing to protected paths, unintended side effects. The command is: $ARGUMENTS\n\nReturn ok=true if safe, ok=false with reason if dangerous. Only flag genuinely dangerous commands, not normal development operations.",
+            "timeout": 10
           }
         ]
       }
@@ -115,6 +125,72 @@
           {
             "type": "command",
             "command": "$HOME/.claude/hooks/track.sh"
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/code-review.sh",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/plan-validate.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/test-runner.sh",
+            "async": true,
+            "timeout": 300
+          },
+          {
+            "type": "prompt",
+            "prompt": "Review the file just written/edited. Check: 1) Does the file header accurately describe the file's purpose? 2) If the file is 50+ lines, does it have a @decision annotation with meaningful rationale? 3) Are function/method comments present for non-trivial logic? 4) Interaction check: include a brief reminder in your response to summarize this change to the user (what file, what changed, why). Context: $ARGUMENTS\n\nReturn ok=true if documentation is adequate, ok=false with specific improvement suggestions if not. Always append: 'Show the user: [filename] — [1-line summary of the change].'",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "permission_prompt|idle_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/notify.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/subagent-start.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "planner|Plan",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "The Planner agent has finished producing a plan. Review the plan output for completeness: 1) Does it include clear requirements and definition of done? 2) Are architectural decisions documented with rationale? 3) Are git issues defined with phases? 4) Is there a worktree strategy? Context: $ARGUMENTS\n\nReturn ok=true if the plan is complete, ok=false with specific gaps if not.",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "implementer",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "Check if the implementer's output includes: 1) A summary of what was built, 2) Test results showing it works, 3) Verification instructions the user can follow. If any of these are missing, return ok=false with specific feedback about what's needed.",
+            "timeout": 30
           }
         ]
       }
@@ -137,6 +213,27 @@
             "type": "command",
             "command": "$HOME/.claude/hooks/surface.sh",
             "timeout": 180
+          },
+          {
+            "type": "agent",
+            "prompt": "You MUST respond with JSON: {\"ok\": true} or {\"ok\": false, \"reason\": \"...\"}. Verify that the project's tests pass before this session response is finalized. Look for test configuration files (package.json scripts, pytest, cargo test, go test) in the project. If a test framework is found, run the tests using Bash. Report whether tests pass or fail. If no test framework is detected, return ok=true. Context: $ARGUMENTS",
+            "timeout": 120
+          },
+          {
+            "type": "prompt",
+            "prompt": "Respond ONLY with JSON: {\"ok\": true} or {\"ok\": false, \"reason\": \"...\"}. Check the assistant's response for forward motion. A good response ends with: a question to the user, a suggestion for next steps, or an offer to continue with related work. If the response simply states completion ('done', 'finished', 'completed') without any forward motion, return ok=false with reason: 'Interaction Style: end with a next step, question, or offer to continue.' If the response already has forward motion, return ok=true. Context: $ARGUMENTS",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/session-end.sh",
+            "timeout": 10
           }
         ]
       }
@@ -146,10 +243,8 @@
     "type": "command",
     "command": "input=$(cat); printf '\\033[2m%s\\033[0m \\033[1;36m%s\\033[0m \\033[2m│\\033[0m \\033[33m%s\\033[0m \\033[2m│\\033[0m \\033[32m%s\\033[0m' \"$(echo \"$input\" | jq -r '.model.display_name')\" \"$(basename \"$(echo \"$input\" | jq -r '.workspace.current_dir')\")\" \"$(date '+%H:%M:%S')\" \"$(echo \"$input\" | jq -r '.version')\""
   },
-  "enabledPlugins": {
-    "canvas@claude-canvas": true
-  },
   "installation": {
-    "method": "npm-global"
-  }
+    "method": "native"
+  },
+  "autoUpdatesChannel": "latest"
 }

@@ -2,28 +2,41 @@
 set -euo pipefail
 
 # Session-end decision validation and audit.
-# Stop hook — runs at session end.
+# Stop hook — runs when Claude finishes responding.
 #
 # Performs the full /surface pipeline: extract → validate → report.
 # No external documentation is generated (Code is Truth).
 # Reports: files changed, @decision coverage, validation issues.
 #
-# This replaces both the old surface.sh Stop hook and the /surface command.
+# Checks stop_hook_active to prevent re-firing loops.
 
 source "$(dirname "$0")/log.sh"
+
+HOOK_INPUT=$(read_input)
+
+# --- Prevent re-firing loops ---
+# stop_hook_active is true if this Stop hook already ran and produced output
+STOP_ACTIVE=$(echo "$HOOK_INPUT" | jq -r '.stop_hook_active // false' 2>/dev/null)
+if [[ "$STOP_ACTIVE" == "true" ]]; then
+    exit 0
+fi
 
 # Get project root (prefers CLAUDE_PROJECT_DIR)
 PROJECT_ROOT=$(detect_project_root)
 
 # Find session tracking file (try session-scoped first, fall back to legacy)
 SESSION_ID="${CLAUDE_SESSION_ID:-}"
-if [[ -n "$SESSION_ID" && -f "$PROJECT_ROOT/.claude/.session-decisions-${SESSION_ID}" ]]; then
-    CHANGES="$PROJECT_ROOT/.claude/.session-decisions-${SESSION_ID}"
-elif [[ -f "$PROJECT_ROOT/.claude/.session-decisions" ]]; then
-    CHANGES="$PROJECT_ROOT/.claude/.session-decisions"
+if [[ -n "$SESSION_ID" && -f "$PROJECT_ROOT/.claude/.session-changes-${SESSION_ID}" ]]; then
+    CHANGES="$PROJECT_ROOT/.claude/.session-changes-${SESSION_ID}"
+elif [[ -f "$PROJECT_ROOT/.claude/.session-changes" ]]; then
+    CHANGES="$PROJECT_ROOT/.claude/.session-changes"
 else
-    # Also check glob for any session file
-    CHANGES=$(ls "$PROJECT_ROOT/.claude/.session-decisions"* 2>/dev/null | head -1 || echo "")
+    # Glob fallback for any session file
+    CHANGES=$(ls "$PROJECT_ROOT/.claude/.session-changes"* 2>/dev/null | head -1 || echo "")
+    # Also check legacy name
+    if [[ -z "$CHANGES" ]]; then
+        CHANGES=$(ls "$PROJECT_ROOT/.claude/.session-decisions"* 2>/dev/null | head -1 || echo "")
+    fi
 fi
 
 # Exit silently if no changes tracked
@@ -31,7 +44,7 @@ fi
 
 # --- Count source file changes ---
 SOURCE_EXTS='(ts|tsx|js|jsx|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh)'
-SOURCE_COUNT=$(grep -cE "\\.${SOURCE_EXTS}$" "$CHANGES" 2>/dev/null || echo 0)
+SOURCE_COUNT=$(grep -cE "\\.${SOURCE_EXTS}$" "$CHANGES" 2>/dev/null) || SOURCE_COUNT=0
 
 if [[ "$SOURCE_COUNT" -eq 0 ]]; then
     rm -f "$CHANGES"
@@ -55,14 +68,23 @@ DECISIONS_IN_CHANGED=0
 MISSING_DECISIONS=()
 VALIDATION_ISSUES=()
 
-# Count total decisions in codebase
+# Count total decisions in codebase (use ripgrep for 10-100x speedup)
 for dir in "${SCAN_DIRS[@]}"; do
-    count=$(grep -rlE "$DECISION_PATTERN" "$dir" \
-        --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' \
-        --include='*.py' --include='*.rs' --include='*.go' --include='*.java' \
-        --include='*.c' --include='*.cpp' --include='*.h' --include='*.hpp' \
-        --include='*.sh' --include='*.rb' --include='*.php' \
-        2>/dev/null | wc -l | tr -d ' ')
+    if command -v rg &>/dev/null; then
+        count=$(rg -l "$DECISION_PATTERN" "$dir" \
+            --glob '*.ts' --glob '*.tsx' --glob '*.js' --glob '*.jsx' \
+            --glob '*.py' --glob '*.rs' --glob '*.go' --glob '*.java' \
+            --glob '*.c' --glob '*.cpp' --glob '*.h' --glob '*.hpp' \
+            --glob '*.sh' --glob '*.rb' --glob '*.php' \
+            2>/dev/null | wc -l | tr -d ' ') || count=0
+    else
+        count=$(grep -rlE "$DECISION_PATTERN" "$dir" \
+            --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' \
+            --include='*.py' --include='*.rs' --include='*.go' --include='*.java' \
+            --include='*.c' --include='*.cpp' --include='*.h' --include='*.hpp' \
+            --include='*.sh' --include='*.rb' --include='*.php' \
+            2>/dev/null | wc -l | tr -d ' ') || count=0
+    fi
     TOTAL_DECISIONS=$((TOTAL_DECISIONS + count))
 done
 
@@ -110,7 +132,7 @@ if [[ ${#VALIDATION_ISSUES[@]} -gt 0 ]]; then
 fi
 
 # Summary
-TOTAL_CHANGED=$(sort -u "$CHANGES" | grep -cE "\\.${SOURCE_EXTS}$" 2>/dev/null || echo 0)
+TOTAL_CHANGED=$(sort -u "$CHANGES" | grep -cE "\\.${SOURCE_EXTS}$" 2>/dev/null) || TOTAL_CHANGED=0
 MISSING_COUNT=${#MISSING_DECISIONS[@]}
 ISSUE_COUNT=${#VALIDATION_ISSUES[@]}
 
@@ -118,6 +140,77 @@ if [[ "$MISSING_COUNT" -eq 0 && "$ISSUE_COUNT" -eq 0 ]]; then
     log_info "OUTCOME" "Documentation complete. $TOTAL_CHANGED source files changed, all properly annotated."
 else
     log_info "OUTCOME" "$TOTAL_CHANGED source files changed. $MISSING_COUNT need @decision, $ISSUE_COUNT have validation issues."
+fi
+
+# --- Plan Reconciliation Audit ---
+if [[ -f "$PROJECT_ROOT/MASTER_PLAN.md" ]]; then
+    log_info "PLAN-SYNC" "Running plan reconciliation audit..."
+
+    # Extract DEC-* IDs from MASTER_PLAN.md
+    PLAN_DECS=$(grep -oE 'DEC-[A-Z]+-[0-9]+' "$PROJECT_ROOT/MASTER_PLAN.md" 2>/dev/null | sort -u || echo "")
+
+    # Extract DEC-* IDs from code (all source files in scan dirs)
+    CODE_DECS=""
+    for dir in "${SCAN_DIRS[@]}"; do
+        if command -v rg &>/dev/null; then
+            dir_decs=$(rg -oN 'DEC-[A-Z]+-[0-9]+' "$dir" \
+                --glob '*.ts' --glob '*.tsx' --glob '*.js' --glob '*.jsx' \
+                --glob '*.py' --glob '*.rs' --glob '*.go' --glob '*.java' \
+                --glob '*.c' --glob '*.cpp' --glob '*.h' --glob '*.hpp' \
+                --glob '*.sh' --glob '*.rb' --glob '*.php' \
+                2>/dev/null || echo "")
+        else
+            dir_decs=$(grep -roE 'DEC-[A-Z]+-[0-9]+' "$dir" \
+                --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' \
+                --include='*.py' --include='*.rs' --include='*.go' --include='*.java' \
+                --include='*.c' --include='*.cpp' --include='*.h' --include='*.hpp' \
+                --include='*.sh' --include='*.rb' --include='*.php' \
+                2>/dev/null || echo "")
+        fi
+        if [[ -n "$dir_decs" ]]; then
+            CODE_DECS+="$dir_decs"$'\n'
+        fi
+    done
+    CODE_DECS=$(echo "$CODE_DECS" | sort -u | grep -v '^$' || echo "")
+
+    # Compare: decisions in code not in plan
+    CODE_NOT_PLAN=""
+    if [[ -n "$CODE_DECS" ]]; then
+        while IFS= read -r dec; do
+            [[ -z "$dec" ]] && continue
+            if [[ -z "$PLAN_DECS" ]] || ! echo "$PLAN_DECS" | grep -qF "$dec"; then
+                CODE_NOT_PLAN+="$dec "
+            fi
+        done <<< "$CODE_DECS"
+    fi
+
+    # Compare: decisions in plan not in code
+    PLAN_NOT_CODE=""
+    if [[ -n "$PLAN_DECS" ]]; then
+        while IFS= read -r dec; do
+            [[ -z "$dec" ]] && continue
+            if [[ -z "$CODE_DECS" ]] || ! echo "$CODE_DECS" | grep -qF "$dec"; then
+                PLAN_NOT_CODE+="$dec "
+            fi
+        done <<< "$PLAN_DECS"
+    fi
+
+    # Phase status summary
+    TOTAL_PHASES=$(grep -cE '^\#\#\s+Phase\s+[0-9]' "$PROJECT_ROOT/MASTER_PLAN.md" 2>/dev/null || echo "0")
+    COMPLETED_PHASES=$(grep -cE '\*\*Status:\*\*\s*completed' "$PROJECT_ROOT/MASTER_PLAN.md" 2>/dev/null || echo "0")
+
+    if [[ -n "$CODE_NOT_PLAN" ]]; then
+        log_info "PLAN-SYNC" "Decisions in code not in plan (unplanned work): $CODE_NOT_PLAN"
+    fi
+    if [[ -n "$PLAN_NOT_CODE" ]]; then
+        log_info "PLAN-SYNC" "Plan decisions not in code (unimplemented): $PLAN_NOT_CODE"
+    fi
+    if [[ -z "$CODE_NOT_PLAN" && -z "$PLAN_NOT_CODE" ]]; then
+        log_info "PLAN-SYNC" "Plan and code are in sync — all decision IDs match."
+    fi
+    if [[ "$TOTAL_PHASES" -gt 0 ]]; then
+        log_info "PLAN-SYNC" "Phase status: $COMPLETED_PHASES/$TOTAL_PHASES completed"
+    fi
 fi
 
 # Clean up session tracking
