@@ -231,12 +231,12 @@
           },
           {
             "type": "agent",
-            "prompt": "You MUST respond with JSON: {\"ok\": true} or {\"ok\": false, \"reason\": \"...\"}. Verify that the project's tests pass before this session response is finalized. Look for test configuration files (package.json scripts, pytest, cargo test, go test) in the project. If a test framework is found, run the tests using Bash. Report whether tests pass or fail. If no test framework is detected, return ok=true. Context: $ARGUMENTS",
+            "prompt": "You MUST respond with JSON: {\"ok\": true} or {\"ok\": false, \"reason\": \"...\"}. FIRST: Check if the current working directory is the ~/.claude config directory (meta-infrastructure). If so, return ok=true immediately — this is not a software project and has no relevant test suite. OTHERWISE: Verify that the project's tests pass before this session response is finalized. Look for test configuration files (package.json scripts, pytest, cargo test, go test) in the project root (NOT in git submodules — only the project's own tests). If a test framework is found, run the tests using Bash. Report whether tests pass or fail. If no test framework is detected, return ok=true. Context: $ARGUMENTS",
             "timeout": 120
           },
           {
             "type": "prompt",
-            "prompt": "Respond ONLY with JSON: {\"ok\": true} or {\"ok\": false, \"reason\": \"...\"}. Check the assistant's response for forward motion. A good response ends with: a question to the user, a suggestion for next steps, or an offer to continue with related work. If the response simply states completion ('done', 'finished', 'completed') without any forward motion, return ok=false with reason: 'Interaction Style: end with a next step, question, or offer to continue.' If the response already has forward motion, return ok=true. Context: $ARGUMENTS",
+            "prompt": "Respond ONLY with JSON: {\"ok\": true} or {\"ok\": false, \"reason\": \"...\"}. Check the LAST paragraph of the assistant's response for forward motion. Forward motion means ANY of: a question mark (?), phrases like 'want me to', 'shall I', 'let me know', 'would you like', 'should I', or an explicit offer/suggestion for next steps. If the last paragraph contains ANY of these indicators, return ok=true. ONLY return ok=false if the response ends with a bare completion statement ('done', 'finished', 'completed', 'all set') with absolutely no question, offer, or suggestion in the final paragraph. When in doubt, return ok=true. Context: $ARGUMENTS",
             "timeout": 10
           }
         ]
