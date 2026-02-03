@@ -12,6 +12,7 @@ set -euo pipefail
 # If no linter detected, exits 0 silently.
 
 source "$(dirname "$0")/log.sh"
+source "$(dirname "$0")/context-lib.sh"
 
 HOOK_INPUT=$(read_input)
 FILE_PATH=$(get_field '.tool_input.file_path')
@@ -20,11 +21,11 @@ FILE_PATH=$(get_field '.tool_input.file_path')
 [[ -z "$FILE_PATH" ]] && exit 0
 [[ ! -f "$FILE_PATH" ]] && exit 0
 
-# Only lint source files
-[[ ! "$FILE_PATH" =~ \.(ts|tsx|js|jsx|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh)$ ]] && exit 0
+# Only lint source files (uses shared SOURCE_EXTENSIONS from context-lib.sh)
+is_source_file "$FILE_PATH" || exit 0
 
 # Skip non-source directories
-[[ "$FILE_PATH" =~ (node_modules|vendor|dist|build|\.next|__pycache__|\.git) ]] && exit 0
+is_skippable_path "$FILE_PATH" && exit 0
 
 # --- Detect project root ---
 PROJECT_ROOT=$(detect_project_root)

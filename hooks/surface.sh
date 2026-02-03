@@ -11,6 +11,7 @@ set -euo pipefail
 # Checks stop_hook_active to prevent re-firing loops.
 
 source "$(dirname "$0")/log.sh"
+source "$(dirname "$0")/context-lib.sh"
 
 HOOK_INPUT=$(read_input)
 
@@ -43,7 +44,8 @@ fi
 [[ -z "$CHANGES" || ! -f "$CHANGES" ]] && exit 0
 
 # --- Count source file changes ---
-SOURCE_EXTS='(ts|tsx|js|jsx|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh)'
+# Uses SOURCE_EXTENSIONS from context-lib.sh
+SOURCE_EXTS="($SOURCE_EXTENSIONS)"
 SOURCE_COUNT=$(grep -cE "\\.${SOURCE_EXTS}$" "$CHANGES" 2>/dev/null) || SOURCE_COUNT=0
 
 if [[ "$SOURCE_COUNT" -eq 0 ]]; then
@@ -91,10 +93,10 @@ done
 # --- Validate: check changed files ---
 while IFS= read -r file; do
     [[ ! -f "$file" ]] && continue
-    # Only check source files
-    [[ ! "$file" =~ \.(ts|tsx|js|jsx|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh)$ ]] && continue
+    # Only check source files (uses shared is_source_file from context-lib.sh)
+    is_source_file "$file" || continue
     # Skip test/config/generated
-    [[ "$file" =~ (\.test\.|\.spec\.|__tests__|\.config\.|\.generated\.|node_modules|vendor|dist|\.git) ]] && continue
+    is_skippable_path "$file" && continue
 
     # Check if file has @decision
     if grep -qE "$DECISION_PATTERN" "$file" 2>/dev/null; then

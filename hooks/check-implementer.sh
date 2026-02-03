@@ -11,8 +11,8 @@ set -euo pipefail
 
 source "$(dirname "$0")/log.sh"
 
-# Consume stdin (required even if unused, to avoid broken pipe)
-read_input >/dev/null 2>&1 || true
+# Capture stdin (contains agent response)
+AGENT_RESPONSE=$(read_input 2>/dev/null || echo "{}")
 
 PROJECT_ROOT=$(detect_project_root)
 
@@ -58,6 +58,17 @@ fi
 
 if [[ "$MISSING_COUNT" -gt 0 ]]; then
     ISSUES+=("$MISSING_COUNT source file(s) ≥50 lines missing @decision annotation")
+fi
+
+# Check 3: Approval-loop detection — agent should not end with unanswered question
+RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.response // .result // .output // empty' 2>/dev/null || echo "")
+if [[ -n "$RESPONSE_TEXT" ]]; then
+    HAS_APPROVAL_QUESTION=$(echo "$RESPONSE_TEXT" | grep -iE 'do you (approve|confirm|want me to proceed)|shall I (proceed|continue)|ready to (test|review|commit)\?' || echo "")
+    HAS_EXECUTION=$(echo "$RESPONSE_TEXT" | grep -iE 'tests pass|implementation complete|done|finished|all tests|ready for review' || echo "")
+
+    if [[ -n "$HAS_APPROVAL_QUESTION" && -z "$HAS_EXECUTION" ]]; then
+        ISSUES+=("Agent ended with approval question but no completion confirmation — may need follow-up")
+    fi
 fi
 
 # Build context message

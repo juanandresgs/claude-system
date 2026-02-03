@@ -12,6 +12,7 @@ set -euo pipefail
 # For Edit: reads file from disk (allows edits to files that already have headers)
 
 source "$(dirname "$0")/log.sh"
+source "$(dirname "$0")/context-lib.sh"
 
 HOOK_INPUT=$(read_input)
 TOOL_NAME=$(get_field '.tool_name')
@@ -20,17 +21,11 @@ FILE_PATH=$(get_field '.tool_input.file_path')
 # Exit silently if no file path
 [[ -z "$FILE_PATH" ]] && exit 0
 
-# --- Skip non-source files ---
-is_source_file() {
-    local f="$1"
-    [[ "$f" =~ \.(ts|tsx|js|jsx|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh)$ ]]
-}
-
+# Skip non-source files (uses shared SOURCE_EXTENSIONS from context-lib.sh)
 is_source_file "$FILE_PATH" || exit 0
 
-# Skip config files, test files, generated files, and common non-source dirs
-[[ "$FILE_PATH" =~ (\.config\.|\.test\.|\.spec\.|__tests__|\.generated\.|\.min\.) ]] && exit 0
-[[ "$FILE_PATH" =~ (node_modules|vendor|dist|build|\.next|__pycache__|\.git) ]] && exit 0
+# Skip test files, config files, vendor directories
+is_skippable_path "$FILE_PATH" && exit 0
 
 # Skip files in this config directory itself (meta-infrastructure)
 [[ "$FILE_PATH" =~ \.claude/hooks/ ]] && exit 0

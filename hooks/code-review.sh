@@ -13,6 +13,7 @@ set -euo pipefail
 # in parallel. Returns findings as additionalContext.
 
 source "$(dirname "$0")/log.sh"
+source "$(dirname "$0")/context-lib.sh"
 
 HOOK_INPUT=$(read_input)
 FILE_PATH=$(echo "$HOOK_INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null)
@@ -22,14 +23,15 @@ TOOL_NAME=$(echo "$HOOK_INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
 [[ -z "$FILE_PATH" ]] && exit 0
 [[ ! -f "$FILE_PATH" ]] && exit 0
 
-# Only review source files
-[[ ! "$FILE_PATH" =~ \.(ts|tsx|js|jsx|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php)$ ]] && exit 0
+# Only review source files (uses shared SOURCE_EXTENSIONS from context-lib.sh)
+is_source_file "$FILE_PATH" || exit 0
 
-# Skip non-source directories
-[[ "$FILE_PATH" =~ (node_modules|vendor|dist|build|\.next|__pycache__|\.git|\.claude) ]] && exit 0
+# Skip non-source directories and test files
+is_skippable_path "$FILE_PATH" && exit 0
+[[ "$FILE_PATH" =~ \.claude ]] && exit 0
 
 # Skip test files (review production code, not tests)
-[[ "$FILE_PATH" =~ (\.test\.|\.spec\.|__tests__|_test\.go|_test\.py) ]] && exit 0
+[[ "$FILE_PATH" =~ (_test\.go|_test\.py) ]] && exit 0
 
 # Skip trivial files (< 20 lines)
 LINE_COUNT=$(wc -l < "$FILE_PATH" 2>/dev/null | tr -d ' ')

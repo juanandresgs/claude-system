@@ -21,6 +21,7 @@ set -euo pipefail
 #   - Files in git worktrees (non-main branches)
 
 source "$(dirname "$0")/log.sh"
+source "$(dirname "$0")/context-lib.sh"
 
 HOOK_INPUT=$(read_input)
 FILE_PATH=$(get_field '.tool_input.file_path')
@@ -34,12 +35,11 @@ FILE_PATH=$(get_field '.tool_input.file_path')
 # Skip MASTER_PLAN.md (plans are written on main by design)
 [[ "$(basename "$FILE_PATH")" == "MASTER_PLAN.md" ]] && exit 0
 
-# Skip non-source files (only check source code extensions)
-[[ ! "$FILE_PATH" =~ \.(ts|tsx|js|jsx|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh)$ ]] && exit 0
+# Skip non-source files (uses shared SOURCE_EXTENSIONS from context-lib.sh)
+is_source_file "$FILE_PATH" || exit 0
 
-# Skip test files, config files, generated files
-[[ "$FILE_PATH" =~ (\.config\.|\.test\.|\.spec\.|__tests__|\.generated\.|\.min\.) ]] && exit 0
-[[ "$FILE_PATH" =~ (node_modules|vendor|dist|build|\.next|__pycache__|\.git) ]] && exit 0
+# Skip test files, config files, vendor directories
+is_skippable_path "$FILE_PATH" && exit 0
 
 # Resolve the git repo for this file
 FILE_DIR=$(dirname "$FILE_PATH")
@@ -62,7 +62,7 @@ if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
   "hookSpecificOutput": {
     "hookEventName": "PreToolUse",
     "permissionDecision": "deny",
-    "permissionDecisionReason": "BLOCKED: Cannot write source code on $CURRENT_BRANCH branch. Sacred Practice #2: Main is sacred. Create a worktree first: git worktree add ../feature-name -b feature-name $CURRENT_BRANCH"
+    "permissionDecisionReason": "BLOCKED: Cannot write source code on $CURRENT_BRANCH branch. Sacred Practice #2: Main is sacred.\n\nAction: Invoke the Guardian agent to create an isolated worktree for this work."
   }
 }
 EOF

@@ -19,6 +19,7 @@ set -euo pipefail
 #   - Non-git directories
 
 source "$(dirname "$0")/log.sh"
+source "$(dirname "$0")/context-lib.sh"
 
 HOOK_INPUT=$(read_input)
 FILE_PATH=$(get_field '.tool_input.file_path')
@@ -26,12 +27,11 @@ FILE_PATH=$(get_field '.tool_input.file_path')
 # Exit silently if no file path
 [[ -z "$FILE_PATH" ]] && exit 0
 
-# Skip non-source files (matches doc-gate.sh extension list)
-[[ ! "$FILE_PATH" =~ \.(ts|tsx|js|jsx|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh)$ ]] && exit 0
+# Skip non-source files (uses shared SOURCE_EXTENSIONS from context-lib.sh)
+is_source_file "$FILE_PATH" || exit 0
 
-# Skip test files, config files, documentation
-[[ "$FILE_PATH" =~ (\.config\.|\.test\.|\.spec\.|__tests__|\.generated\.|\.min\.) ]] && exit 0
-[[ "$FILE_PATH" =~ (node_modules|vendor|dist|build|\.next|__pycache__|\.git) ]] && exit 0
+# Skip test files, config files, vendor directories
+is_skippable_path "$FILE_PATH" && exit 0
 
 # Skip the .claude config directory itself
 [[ "$FILE_PATH" =~ \.claude/ ]] && exit 0
@@ -73,7 +73,7 @@ if [[ ! -f "$PROJECT_ROOT/MASTER_PLAN.md" ]]; then
   "hookSpecificOutput": {
     "hookEventName": "PreToolUse",
     "permissionDecision": "deny",
-    "permissionDecisionReason": "BLOCKED: No MASTER_PLAN.md in $PROJECT_ROOT. Sacred Practice #6: We NEVER run straight into implementing anything. Create a plan first: invoke the Planner agent to produce MASTER_PLAN.md, then retry."
+    "permissionDecisionReason": "BLOCKED: No MASTER_PLAN.md in $PROJECT_ROOT. Sacred Practice #6: We NEVER run straight into implementing anything.\n\nAction: Invoke the Planner agent to create MASTER_PLAN.md before implementing."
   }
 }
 EOF

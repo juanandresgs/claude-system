@@ -92,5 +92,28 @@ get_session_changes() {
     fi
 }
 
+# --- Source file detection ---
+# Single source of truth for source file extensions across all hooks.
+# DECISION: Consolidated extension list. Rationale: Source file regex was
+# copy-pasted in 8+ hooks creating drift risk. Status: accepted.
+SOURCE_EXTENSIONS='ts|tsx|js|jsx|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh'
+
+# Check if a file is a source file by extension
+is_source_file() {
+    local file="$1"
+    [[ "$file" =~ \.($SOURCE_EXTENSIONS)$ ]]
+}
+
+# Check if a file should be skipped (test, config, generated, vendor)
+is_skippable_path() {
+    local file="$1"
+    # Skip config files, test files, generated files
+    [[ "$file" =~ (\.config\.|\.test\.|\.spec\.|__tests__|\.generated\.|\.min\.) ]] && return 0
+    # Skip vendor/build directories
+    [[ "$file" =~ (node_modules|vendor|dist|build|\.next|__pycache__|\.git) ]] && return 0
+    return 1
+}
+
 # Export for subshells
-export -f get_git_state get_plan_status get_session_changes
+export SOURCE_EXTENSIONS
+export -f get_git_state get_plan_status get_session_changes is_source_file is_skippable_path

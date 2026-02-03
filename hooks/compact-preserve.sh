@@ -79,6 +79,26 @@ if [[ -n "$SESSION_FILE" && -f "$SESSION_FILE" ]]; then
     while IFS= read -r f; do
         CONTEXT_PARTS+=("  $f")
     done < <(sort -u "$SESSION_FILE" | head -20)
+
+    # --- Key @decisions made this session ---
+    # Scan modified files for @decision annotations to preserve decision context
+    DECISION_PATTERN='@decision|# DECISION:|// DECISION\('
+    DECISIONS_FOUND=()
+    while IFS= read -r file; do
+        [[ ! -f "$file" ]] && continue
+        # Extract decision IDs/titles from this file
+        decision_line=$(grep -oE '@decision\s+[A-Z]+-[A-Z0-9-]+|# DECISION:\s*[^.]+|// DECISION\([^)]+\)' "$file" 2>/dev/null | head -1 || echo "")
+        if [[ -n "$decision_line" ]]; then
+            DECISIONS_FOUND+=("$(basename "$file"): $decision_line")
+        fi
+    done < <(sort -u "$SESSION_FILE")
+
+    if [[ ${#DECISIONS_FOUND[@]} -gt 0 ]]; then
+        CONTEXT_PARTS+=("Key @decisions this session:")
+        for dec in "${DECISIONS_FOUND[@]:0:10}"; do
+            CONTEXT_PARTS+=("  $dec")
+        done
+    fi
 fi
 
 # --- Output ---

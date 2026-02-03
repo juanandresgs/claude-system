@@ -11,8 +11,8 @@ set -euo pipefail
 
 source "$(dirname "$0")/log.sh"
 
-# Consume stdin (required even if unused, to avoid broken pipe)
-read_input >/dev/null 2>&1 || true
+# Capture stdin (contains agent response)
+AGENT_RESPONSE=$(read_input 2>/dev/null || echo "{}")
 
 PROJECT_ROOT=$(detect_project_root)
 PLAN="$PROJECT_ROOT/MASTER_PLAN.md"
@@ -41,6 +41,17 @@ else
     # Check 4: Has git issues or tasks
     if ! grep -qiE 'issue|task|TODO|work.?item' "$PLAN" 2>/dev/null; then
         ISSUES+=("MASTER_PLAN.md may lack git issues or task breakdown")
+    fi
+fi
+
+# Check 5: Approval-loop detection — agent should not end with unanswered question
+RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.response // .result // .output // empty' 2>/dev/null || echo "")
+if [[ -n "$RESPONSE_TEXT" ]]; then
+    HAS_APPROVAL_QUESTION=$(echo "$RESPONSE_TEXT" | grep -iE 'do you (approve|confirm|want me to proceed)|shall I (proceed|continue|write)|ready to (begin|start|implement)\?' || echo "")
+    HAS_COMPLETION=$(echo "$RESPONSE_TEXT" | grep -iE 'plan (complete|ready|written)|MASTER_PLAN\.md (created|written|updated)|created.*issues|phases defined' || echo "")
+
+    if [[ -n "$HAS_APPROVAL_QUESTION" && -z "$HAS_COMPLETION" ]]; then
+        ISSUES+=("Agent ended with approval question but no plan completion confirmation — may need follow-up")
     fi
 fi
 

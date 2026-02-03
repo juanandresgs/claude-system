@@ -16,6 +16,7 @@ set -euo pipefail
 # hooks (.claude/, config, docs, tests, MASTER_PLAN.md).
 
 source "$(dirname "$0")/log.sh"
+source "$(dirname "$0")/context-lib.sh"
 
 HOOK_INPUT=$(read_input)
 FILE_PATH=$(get_field '.tool_input.file_path')
@@ -29,12 +30,11 @@ FILE_PATH=$(get_field '.tool_input.file_path')
 # Skip MASTER_PLAN.md (orchestrator writes plans on main)
 [[ "$(basename "$FILE_PATH")" == "MASTER_PLAN.md" ]] && exit 0
 
-# Skip non-source files
-[[ ! "$FILE_PATH" =~ \.(ts|tsx|js|jsx|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh)$ ]] && exit 0
+# Skip non-source files (uses shared SOURCE_EXTENSIONS from context-lib.sh)
+is_source_file "$FILE_PATH" || exit 0
 
-# Skip test files, config files, generated files
-[[ "$FILE_PATH" =~ (\.config\.|\.test\.|\.spec\.|__tests__|\.generated\.|\.min\.) ]] && exit 0
-[[ "$FILE_PATH" =~ (node_modules|vendor|dist|build|\.next|__pycache__|\.git) ]] && exit 0
+# Skip test files, config files, vendor directories
+is_skippable_path "$FILE_PATH" && exit 0
 
 # If we're inside a subagent, this advisory doesn't apply
 # CLAUDE_AGENT_TYPE is set for subagents (implementer, planner, guardian)

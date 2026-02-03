@@ -11,8 +11,8 @@ set -euo pipefail
 
 source "$(dirname "$0")/log.sh"
 
-# Consume stdin (required even if unused, to avoid broken pipe)
-read_input >/dev/null 2>&1 || true
+# Capture stdin (contains agent response)
+AGENT_RESPONSE=$(read_input 2>/dev/null || echo "{}")
 
 PROJECT_ROOT=$(detect_project_root)
 PLAN="$PROJECT_ROOT/MASTER_PLAN.md"
@@ -46,6 +46,20 @@ fi
 # Check 3: Current branch info for context
 CURRENT_BRANCH=$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
 LAST_COMMIT=$(git -C "$PROJECT_ROOT" log --oneline -1 2>/dev/null || echo "none")
+
+# Check 4: Approval-loop detection — agent should not end with unanswered question
+# Extract agent's response text from the hook input
+RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.response // .result // .output // empty' 2>/dev/null || echo "")
+if [[ -n "$RESPONSE_TEXT" ]]; then
+    # Check if response ends with an approval question
+    HAS_APPROVAL_QUESTION=$(echo "$RESPONSE_TEXT" | grep -iE 'do you (approve|confirm|want me to proceed)|shall I (proceed|continue|merge)|ready to (merge|commit|proceed)\?' || echo "")
+    # Check if response also contains execution confirmation
+    HAS_EXECUTION=$(echo "$RESPONSE_TEXT" | grep -iE 'executing|done|merged|committed|completed|pushed|created branch|worktree created' || echo "")
+
+    if [[ -n "$HAS_APPROVAL_QUESTION" && -z "$HAS_EXECUTION" ]]; then
+        ISSUES+=("Agent ended with approval question but no execution confirmation — may need follow-up")
+    fi
+fi
 
 # Build context message
 CONTEXT=""

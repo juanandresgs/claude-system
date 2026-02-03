@@ -12,6 +12,7 @@ set -euo pipefail
 # Skips non-source files and files in non-source directories.
 
 source "$(dirname "$0")/log.sh"
+source "$(dirname "$0")/context-lib.sh"
 
 HOOK_INPUT=$(read_input)
 FILE_PATH=$(echo "$HOOK_INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null)
@@ -20,11 +21,12 @@ FILE_PATH=$(echo "$HOOK_INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/n
 [[ -z "$FILE_PATH" ]] && exit 0
 [[ ! -f "$FILE_PATH" ]] && exit 0
 
-# Only run tests for source files
-[[ ! "$FILE_PATH" =~ \.(ts|tsx|js|jsx|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php)$ ]] && exit 0
+# Only run tests for source files (uses shared SOURCE_EXTENSIONS from context-lib.sh)
+is_source_file "$FILE_PATH" || exit 0
 
 # Skip non-source directories
-[[ "$FILE_PATH" =~ (node_modules|vendor|dist|build|\.next|__pycache__|\.git|\.claude) ]] && exit 0
+is_skippable_path "$FILE_PATH" && exit 0
+[[ "$FILE_PATH" =~ \.claude ]] && exit 0
 
 PROJECT_ROOT=$(detect_project_root)
 
