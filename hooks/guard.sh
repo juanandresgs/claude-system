@@ -7,6 +7,7 @@ set -euo pipefail
 # Enforces via updatedInput (transparent rewrites):
 #   - /tmp/ writes → rewritten to project tmp/ directory
 #   - git push --force → rewritten to --force-with-lease (except to main/master)
+#   - git worktree remove → rewritten to cd to main worktree first (prevents CWD death spiral)
 #
 # Enforces via deny (hard blocks):
 #   - Main is sacred (no commits on main/master)
@@ -151,27 +152,16 @@ if echo "$COMMAND" | grep -qE 'git\s+branch\s+.*-D\b'; then
     deny "git branch -D force-deletes a branch even if unmerged. Use git branch -d (lowercase) for safe deletion."
 fi
 
-# --- Check 5: Worktree removal CWD safety warning ---
+# --- Check 5: Worktree removal CWD safety rewrite ---
 if echo "$COMMAND" | grep -qE 'git[[:space:]]+worktree[[:space:]]+remove'; then
-    # Extract the worktree path: strip everything up to and including "remove [-f]"
     WT_PATH=$(echo "$COMMAND" | sed -E 's/.*git[[:space:]]+worktree[[:space:]]+remove[[:space:]]+(-f[[:space:]]+)?//' | xargs)
     if [[ -n "$WT_PATH" ]]; then
-        # Resolve to absolute path if relative
-        if [[ "$WT_PATH" != /* ]]; then
-            RESOLVED_DIR=$(cd "$(dirname "$WT_PATH")" 2>/dev/null && pwd) || true
-            if [[ -n "${RESOLVED_DIR:-}" ]]; then
-                WT_PATH="$RESOLVED_DIR/$(basename "$WT_PATH")"
-            fi
-        fi
-        cat <<WT_EOF
-{
-  "hookSpecificOutput": {
-    "hookEventName": "PreToolUse",
-    "additionalContext": "WARNING: Removing worktree at $WT_PATH. If the orchestrator Bash CWD is inside this path, all subsequent commands and Stop hooks will fail (posix_spawn ENOENT). Ensure you have cd'd to a valid directory (e.g., the main repo root) BEFORE running this command."
-  }
-}
-WT_EOF
-        exit 0
+        # Find main worktree (safe target for cd)
+        MAIN_WT=$(git worktree list 2>/dev/null | awk '{print $1; exit}')
+        MAIN_WT="${MAIN_WT:-$(detect_project_root)}"
+        # Rewrite: cd to main worktree before removal prevents CWD death spiral
+        REWRITTEN="cd \"$MAIN_WT\" && $COMMAND"
+        rewrite "$REWRITTEN" "Rewrote to cd to main worktree before removal. Prevents death spiral if Bash CWD is inside the worktree being removed."
     fi
 fi
 
