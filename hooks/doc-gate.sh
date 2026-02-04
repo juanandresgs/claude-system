@@ -203,12 +203,11 @@ EOF
     fi
 
     # File has no header — warn but don't block (the edit might be adding one)
-    TEMPLATE=$(get_header_template "$FILE_PATH")
     cat <<EOF
 {
   "hookSpecificOutput": {
     "hookEventName": "PreToolUse",
-    "additionalContext": "File $FILE_PATH has no documentation header. Consider adding one:\n$TEMPLATE"
+    "additionalContext": "File $FILE_PATH lacks doc header. See CLAUDE.md for template."
   }
 }
 EOF

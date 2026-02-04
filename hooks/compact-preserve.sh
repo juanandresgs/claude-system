@@ -19,30 +19,13 @@ CONTEXT_PARTS=()
 # --- Git state ---
 if [[ -d "$PROJECT_ROOT/.git" ]]; then
     BRANCH=$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
-    CONTEXT_PARTS+=("Current branch: $BRANCH")
-
     DIRTY_COUNT=$(git -C "$PROJECT_ROOT" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
-    if [[ "$DIRTY_COUNT" -gt 0 ]]; then
-        CONTEXT_PARTS+=("Uncommitted changes: $DIRTY_COUNT files")
-    fi
+    COMMIT_COUNT=$(git -C "$PROJECT_ROOT" log --oneline -3 2>/dev/null | wc -l | tr -d ' ')
+    WT_COUNT=$(git -C "$PROJECT_ROOT" worktree list 2>/dev/null | grep -v "(bare)" | tail -n +2 | wc -l | tr -d ' ')
 
-    # Recent commits on this branch
-    RECENT=$(git -C "$PROJECT_ROOT" log --oneline -3 2>/dev/null || echo "")
-    if [[ -n "$RECENT" ]]; then
-        CONTEXT_PARTS+=("Recent commits:")
-        while IFS= read -r line; do
-            CONTEXT_PARTS+=("  $line")
-        done <<< "$RECENT"
-    fi
-
-    # Active worktrees
-    WORKTREES=$(git -C "$PROJECT_ROOT" worktree list 2>/dev/null | grep -v "(bare)" | tail -n +2)
-    if [[ -n "$WORKTREES" ]]; then
-        CONTEXT_PARTS+=("Active worktrees:")
-        while IFS= read -r line; do
-            CONTEXT_PARTS+=("  $line")
-        done <<< "$WORKTREES"
-    fi
+    GIT_LINE="Git: $BRANCH | $DIRTY_COUNT uncommitted | $COMMIT_COUNT recent commits"
+    [[ "$WT_COUNT" -gt 0 ]] && GIT_LINE="$GIT_LINE | $WT_COUNT worktrees"
+    CONTEXT_PARTS+=("$GIT_LINE")
 fi
 
 # --- MASTER_PLAN.md ---
@@ -74,30 +57,28 @@ fi
 
 if [[ -n "$SESSION_FILE" && -f "$SESSION_FILE" ]]; then
     FILE_COUNT=$(sort -u "$SESSION_FILE" | wc -l | tr -d ' ')
-    CONTEXT_PARTS+=("Files modified this session: $FILE_COUNT")
-    # List unique files
-    while IFS= read -r f; do
-        CONTEXT_PARTS+=("  $f")
-    done < <(sort -u "$SESSION_FILE" | head -20)
+    # Comma-separated file list, truncated at 5
+    FILE_LIST=$(sort -u "$SESSION_FILE" | head -5 | xargs -I{} basename {} | paste -sd', ' -)
+    REMAINING=$((FILE_COUNT - 5))
+    if [[ "$REMAINING" -gt 0 ]]; then
+        CONTEXT_PARTS+=("Modified: $FILE_LIST (+$REMAINING more)")
+    else
+        CONTEXT_PARTS+=("Modified: $FILE_LIST")
+    fi
 
-    # --- Key @decisions made this session ---
-    # Scan modified files for @decision annotations to preserve decision context
-    DECISION_PATTERN='@decision|# DECISION:|// DECISION\('
+    # --- Key @decisions made this session (one line) ---
     DECISIONS_FOUND=()
     while IFS= read -r file; do
         [[ ! -f "$file" ]] && continue
-        # Extract decision IDs/titles from this file
         decision_line=$(grep -oE '@decision\s+[A-Z]+-[A-Z0-9-]+|# DECISION:\s*[^.]+|// DECISION\([^)]+\)' "$file" 2>/dev/null | head -1 || echo "")
         if [[ -n "$decision_line" ]]; then
-            DECISIONS_FOUND+=("$(basename "$file"): $decision_line")
+            DECISIONS_FOUND+=("$decision_line ($(basename "$file"))")
         fi
     done < <(sort -u "$SESSION_FILE")
 
     if [[ ${#DECISIONS_FOUND[@]} -gt 0 ]]; then
-        CONTEXT_PARTS+=("Key @decisions this session:")
-        for dec in "${DECISIONS_FOUND[@]:0:10}"; do
-            CONTEXT_PARTS+=("  $dec")
-        done
+        DECISIONS_LINE=$(printf '%s, ' "${DECISIONS_FOUND[@]:0:5}")
+        CONTEXT_PARTS+=("Decisions: ${DECISIONS_LINE%, }")
     fi
 fi
 

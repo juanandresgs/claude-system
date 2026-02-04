@@ -46,41 +46,18 @@ if [[ -f "$FINDINGS_FILE" && -s "$FINDINGS_FILE" ]]; then
     rm -f "$FINDINGS_FILE"
 fi
 
-# --- Inject recent audit trail ---
-AUDIT_LOG="${PROJECT_ROOT}/.claude/.audit-log"
-if [[ -f "$AUDIT_LOG" && -s "$AUDIT_LOG" ]]; then
-    RECENT=$(tail -5 "$AUDIT_LOG")
-    if [[ -n "$RECENT" ]]; then
-        CONTEXT_PARTS+=("Recent audit events:")
-        while IFS= read -r line; do
-            CONTEXT_PARTS+=("  $line")
-        done <<< "$RECENT"
-    fi
-fi
-
 # --- Check for plan/implement/status keywords ---
 if echo "$PROMPT" | grep -qiE '\bplan\b|\bimplement\b|\bphase\b|\bmaster.plan\b|\bstatus\b|\bprogress\b|\bdemo\b'; then
     get_plan_status "$PROJECT_ROOT"
 
     if [[ "$PLAN_EXISTS" == "true" ]]; then
-        if [[ "$PLAN_TOTAL_PHASES" -gt 0 ]]; then
-            CONTEXT_PARTS+=("Plan progress: $PLAN_COMPLETED_PHASES/$PLAN_TOTAL_PHASES phases completed, $PLAN_IN_PROGRESS_PHASES in-progress")
-        fi
-
-        if [[ "$PLAN_AGE_DAYS" -gt 0 ]]; then
-            CONTEXT_PARTS+=("MASTER_PLAN.md last updated: ${PLAN_AGE_DAYS}d ago")
-        fi
-
-        if [[ -n "$PLAN_PHASE" ]]; then
-            CONTEXT_PARTS+=("MASTER_PLAN.md active phase: $PLAN_PHASE")
-        else
-            CONTEXT_PARTS+=("MASTER_PLAN.md exists (no phase markers found)")
-        fi
-
+        PLAN_LINE="Plan:"
+        [[ "$PLAN_TOTAL_PHASES" -gt 0 ]] && PLAN_LINE="$PLAN_LINE $PLAN_COMPLETED_PHASES/$PLAN_TOTAL_PHASES phases done"
+        [[ -n "$PLAN_PHASE" ]] && PLAN_LINE="$PLAN_LINE | active: $PLAN_PHASE"
+        [[ "$PLAN_AGE_DAYS" -gt 0 ]] && PLAN_LINE="$PLAN_LINE | age: ${PLAN_AGE_DAYS}d"
         get_session_changes "$PROJECT_ROOT"
-        if [[ "$SESSION_CHANGED_COUNT" -gt 0 ]]; then
-            CONTEXT_PARTS+=("Files changed this session: $SESSION_CHANGED_COUNT")
-        fi
+        [[ "$SESSION_CHANGED_COUNT" -gt 0 ]] && PLAN_LINE="$PLAN_LINE | $SESSION_CHANGED_COUNT files changed"
+        CONTEXT_PARTS+=("$PLAN_LINE")
     else
         CONTEXT_PARTS+=("No MASTER_PLAN.md found — Core Dogma requires planning before implementation.")
     fi

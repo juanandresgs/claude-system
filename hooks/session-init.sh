@@ -24,18 +24,13 @@ CONTEXT_PARTS=()
 get_git_state "$PROJECT_ROOT"
 
 if [[ -n "$GIT_BRANCH" ]]; then
-    CONTEXT_PARTS+=("Git: branch=$GIT_BRANCH")
+    GIT_LINE="Git: branch=$GIT_BRANCH"
+    [[ "$GIT_DIRTY_COUNT" -gt 0 ]] && GIT_LINE="$GIT_LINE | $GIT_DIRTY_COUNT uncommitted"
+    [[ "$GIT_WT_COUNT" -gt 0 ]] && GIT_LINE="$GIT_LINE | $GIT_WT_COUNT worktrees"
+    CONTEXT_PARTS+=("$GIT_LINE")
 
     if [[ "$GIT_BRANCH" == "main" || "$GIT_BRANCH" == "master" ]]; then
         CONTEXT_PARTS+=("WARNING: On $GIT_BRANCH branch. Sacred Practice #2: create a worktree before making changes.")
-    fi
-
-    if [[ "$GIT_DIRTY_COUNT" -gt 0 ]]; then
-        CONTEXT_PARTS+=("Working tree: $GIT_DIRTY_COUNT uncommitted changes")
-    fi
-
-    if [[ "$GIT_WT_COUNT" -gt 0 ]]; then
-        CONTEXT_PARTS+=("Active worktrees: $GIT_WT_COUNT")
     fi
 fi
 
@@ -43,47 +38,25 @@ fi
 get_plan_status "$PROJECT_ROOT"
 
 if [[ "$PLAN_EXISTS" == "true" ]]; then
-    PLAN_STATUS_LINE=$(grep -i '^\*\*Status\*\*\|^Status:' "$PROJECT_ROOT/MASTER_PLAN.md" 2>/dev/null | head -1 || echo "")
-    if [[ -n "$PLAN_STATUS_LINE" ]]; then
-        CONTEXT_PARTS+=("MASTER_PLAN.md: exists ($PLAN_STATUS_LINE)")
-    else
-        CONTEXT_PARTS+=("MASTER_PLAN.md: exists")
-    fi
-
-    if [[ "$PLAN_AGE_DAYS" -gt 0 ]]; then
-        CONTEXT_PARTS+=("Plan age: ${PLAN_AGE_DAYS}d since last update")
-    fi
+    PLAN_LINE="Plan:"
+    [[ "$PLAN_TOTAL_PHASES" -gt 0 ]] && PLAN_LINE="$PLAN_LINE $PLAN_COMPLETED_PHASES/$PLAN_TOTAL_PHASES phases"
+    [[ -n "$PLAN_PHASE" ]] && PLAN_LINE="$PLAN_LINE | active: $PLAN_PHASE"
+    [[ "$PLAN_AGE_DAYS" -gt 0 ]] && PLAN_LINE="$PLAN_LINE | age: ${PLAN_AGE_DAYS}d"
+    CONTEXT_PARTS+=("$PLAN_LINE")
 
     if [[ "$PLAN_COMMITS_SINCE" -ge 5 ]]; then
-        CONTEXT_PARTS+=("MASTER_PLAN.md may be stale (last updated ${PLAN_AGE_DAYS}d ago, $PLAN_COMMITS_SINCE commits since)")
-    fi
-
-    if [[ "$PLAN_TOTAL_PHASES" -gt 0 ]]; then
-        CONTEXT_PARTS+=("Plan progress: $PLAN_COMPLETED_PHASES/$PLAN_TOTAL_PHASES phases completed")
+        CONTEXT_PARTS+=("WARNING: Plan may be stale ($PLAN_COMMITS_SINCE commits since last update)")
     fi
 else
-    CONTEXT_PARTS+=("MASTER_PLAN.md: not found (required before implementation)")
+    CONTEXT_PARTS+=("Plan: not found (required before implementation)")
 fi
 
 # --- Stale session files ---
+STALE_FILE_COUNT=0
 for pattern in "$PROJECT_ROOT/.claude/.session-changes"* "$PROJECT_ROOT/.claude/.session-decisions"*; do
-    if [[ -f "$pattern" ]]; then
-        STALE_COUNT=$(wc -l < "$pattern" | tr -d ' ')
-        STALE_NAME=$(basename "$pattern")
-        CONTEXT_PARTS+=("Stale session file: $STALE_NAME ($STALE_COUNT entries from previous session)")
-    fi
+    [[ -f "$pattern" ]] && STALE_FILE_COUNT=$((STALE_FILE_COUNT + 1))
 done
-
-# --- Previous session audit trail ---
-AUDIT_LOG="${PROJECT_ROOT}/.claude/.audit-log"
-if [[ -f "$AUDIT_LOG" && -s "$AUDIT_LOG" ]]; then
-    ENTRY_COUNT=$(wc -l < "$AUDIT_LOG" | tr -d ' ')
-    RECENT=$(tail -10 "$AUDIT_LOG")
-    CONTEXT_PARTS+=("Audit trail ($ENTRY_COUNT entries, showing last 10):")
-    while IFS= read -r line; do
-        CONTEXT_PARTS+=("  $line")
-    done <<< "$RECENT"
-fi
+[[ "$STALE_FILE_COUNT" -gt 0 ]] && CONTEXT_PARTS+=("Stale session files: $STALE_FILE_COUNT from previous session")
 
 # --- Pending agent findings ---
 FINDINGS_FILE="${PROJECT_ROOT}/.claude/.agent-findings"

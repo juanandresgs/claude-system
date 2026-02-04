@@ -20,37 +20,20 @@ AGENT_TYPE=$(echo "$HOOK_INPUT" | jq -r '.agent_type // empty' 2>/dev/null)
 PROJECT_ROOT=$(detect_project_root)
 CONTEXT_PARTS=()
 
-# --- Git state (via shared library) ---
+# --- Git + Plan state (one line) ---
 get_git_state "$PROJECT_ROOT"
-
-if [[ -n "$GIT_BRANCH" ]]; then
-    CONTEXT_PARTS+=("Git branch: $GIT_BRANCH")
-
-    if [[ "$GIT_DIRTY_COUNT" -gt 0 ]]; then
-        CONTEXT_PARTS+=("Uncommitted changes: $GIT_DIRTY_COUNT files")
-    fi
-
-    if [[ "$GIT_WT_COUNT" -gt 0 ]]; then
-        CONTEXT_PARTS+=("Active worktrees: $GIT_WT_COUNT")
-        while IFS= read -r line; do
-            [[ -z "$line" ]] && continue
-            CONTEXT_PARTS+=("  $line")
-        done <<< "$GIT_WORKTREES"
-    fi
-fi
-
-# --- MASTER_PLAN.md (via shared library) ---
 get_plan_status "$PROJECT_ROOT"
 
+CTX_LINE="Context:"
+[[ -n "$GIT_BRANCH" ]] && CTX_LINE="$CTX_LINE $GIT_BRANCH"
+[[ "$GIT_DIRTY_COUNT" -gt 0 ]] && CTX_LINE="$CTX_LINE | $GIT_DIRTY_COUNT dirty"
+[[ "$GIT_WT_COUNT" -gt 0 ]] && CTX_LINE="$CTX_LINE | $GIT_WT_COUNT worktrees"
 if [[ "$PLAN_EXISTS" == "true" ]]; then
-    if [[ -n "$PLAN_PHASE" ]]; then
-        CONTEXT_PARTS+=("MASTER_PLAN.md: active ($PLAN_PHASE)")
-    else
-        CONTEXT_PARTS+=("MASTER_PLAN.md: exists")
-    fi
+    [[ -n "$PLAN_PHASE" ]] && CTX_LINE="$CTX_LINE | Plan: $PLAN_PHASE" || CTX_LINE="$CTX_LINE | Plan: exists"
 else
-    CONTEXT_PARTS+=("MASTER_PLAN.md: not found")
+    CTX_LINE="$CTX_LINE | Plan: not found"
 fi
+CONTEXT_PARTS+=("$CTX_LINE")
 
 # --- Agent-type-specific context ---
 case "$AGENT_TYPE" in

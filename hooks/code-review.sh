@@ -49,13 +49,13 @@ DIFF_CONTEXT=""
 if [[ -d "$PROJECT_ROOT/.git" ]] && git -C "$PROJECT_ROOT" diff --quiet "$FILE_PATH" 2>/dev/null; then
     : # File is clean (no diff)
 else
-    DIFF_CONTEXT=$(git -C "$PROJECT_ROOT" diff "$FILE_PATH" 2>/dev/null | head -100 || echo "")
+    DIFF_CONTEXT=$(git -C "$PROJECT_ROOT" diff "$FILE_PATH" 2>/dev/null | head -10 || echo "")
 fi
 
 # Build review request context
 REVIEW_CONTEXT="File changed: $FILE_PATH ($LINE_COUNT lines)"
 if [[ -n "$DIFF_CONTEXT" ]]; then
-    REVIEW_CONTEXT="$REVIEW_CONTEXT\nRecent diff (first 100 lines):\n$DIFF_CONTEXT"
+    REVIEW_CONTEXT="$REVIEW_CONTEXT\nRecent diff (first 10 lines):\n$DIFF_CONTEXT"
 fi
 
 ESCAPED=$(echo -e "$REVIEW_CONTEXT\n\nConsider running mcp__multi__codereview on this file for multi-model analysis if significant architectural changes were made." | jq -Rs .)
