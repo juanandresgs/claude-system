@@ -62,8 +62,27 @@ PROJECT_ROOT=$(detect_project_root)
 TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
 STRIKES_FILE="${PROJECT_ROOT}/.claude/.test-gate-strikes"
 
-# No test status yet → allow
-[[ ! -f "$TEST_STATUS_FILE" ]] && exit 0
+# No test status yet → allow (with cold-start advisory if test framework detected)
+if [[ ! -f "$TEST_STATUS_FILE" ]]; then
+    HAS_TESTS=false
+    [[ -f "$PROJECT_ROOT/pyproject.toml" ]] && HAS_TESTS=true
+    [[ -f "$PROJECT_ROOT/vitest.config.ts" || -f "$PROJECT_ROOT/vitest.config.js" ]] && HAS_TESTS=true
+    [[ -f "$PROJECT_ROOT/jest.config.ts" || -f "$PROJECT_ROOT/jest.config.js" ]] && HAS_TESTS=true
+    [[ -f "$PROJECT_ROOT/Cargo.toml" ]] && HAS_TESTS=true
+    [[ -f "$PROJECT_ROOT/go.mod" ]] && HAS_TESTS=true
+    if [[ "$HAS_TESTS" == "true" ]]; then
+        COLD_FLAG="${PROJECT_ROOT}/.claude/.test-gate-cold-warned"
+        if [[ ! -f "$COLD_FLAG" ]]; then
+            mkdir -p "${PROJECT_ROOT}/.claude"
+            touch "$COLD_FLAG"
+            cat <<EOF
+{ "hookSpecificOutput": { "hookEventName": "PreToolUse", "additionalContext": "No test results yet but test framework detected. Tests will run automatically after this write." } }
+EOF
+            exit 0
+        fi
+    fi
+    exit 0
+fi
 
 TEST_RESULT=$(cut -d'|' -f1 "$TEST_STATUS_FILE")
 TEST_FAILS=$(cut -d'|' -f2 "$TEST_STATUS_FILE")

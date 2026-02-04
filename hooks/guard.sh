@@ -181,5 +181,21 @@ if echo "$COMMAND" | grep -qE 'git\s+merge'; then
     fi
 fi
 
+# --- Check 7: Test status gate for commit commands ---
+if echo "$COMMAND" | grep -qE 'git\s+commit'; then
+    PROJECT_ROOT=$(extract_git_target_dir "$COMMAND")
+    TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
+    if [[ -f "$TEST_STATUS_FILE" ]]; then
+        TEST_RESULT=$(cut -d'|' -f1 "$TEST_STATUS_FILE")
+        TEST_FAILS=$(cut -d'|' -f2 "$TEST_STATUS_FILE")
+        TEST_TIME=$(cut -d'|' -f3 "$TEST_STATUS_FILE")
+        NOW=$(date +%s)
+        AGE=$(( NOW - TEST_TIME ))
+        if [[ "$TEST_RESULT" == "fail" && "$AGE" -lt 600 ]]; then
+            deny "Cannot commit: tests are failing ($TEST_FAILS failures, ${AGE}s ago). Fix test failures before committing."
+        fi
+    fi
+fi
+
 # All checks passed
 exit 0

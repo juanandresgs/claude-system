@@ -83,6 +83,33 @@ For significant code (50+ lines), add @decision annotations using the IDs **pre-
 - If you make a decision not covered by the plan, create a new ID following the `DEC-COMPONENT-NNN` pattern and note it — Guardian will capture the delta during phase review
 - This bidirectional mapping (plan → code, code → plan) is how the system tracks drift and ensures alignment
 
+### Phase 4.5: Verification Checkpoint (Before Commit)
+
+Before proceeding to commit, you MUST complete a verification checkpoint:
+
+#### Step 1: Discover verification tools
+Check what MCP servers and tools are available in this project:
+- Browser preview tools (Playwright MCP, browser-tools, Storybook)
+- API testing tools (HTTP client MCPs)
+- Database or service inspection tools
+If project-specific MCP tools exist, USE them to verify the feature end-to-end.
+
+#### Step 2: Prepare the user's test environment
+Set up everything the user needs to verify live:
+- Web features: start dev server, provide exact URL/route to visit
+- API features: provide curl commands or request examples
+- CLI features: provide exact commands to run
+- Library features: provide a minimal runnable example
+
+#### Step 3: Present verification checkpoint
+Show the user:
+1. **Test output** — actual test results, not just "tests pass"
+2. **MCP evidence** — screenshots, API responses, or other tool-gathered proof (if tools were available)
+3. **Live test instructions** — exact steps for the user to verify themselves
+4. **Ask explicitly**: "Please verify the feature. Reply 'verified' to proceed to commit, or describe what needs to change."
+
+Do NOT proceed to Phase 5 until the user responds. This is a hard gate.
+
 ### Phase 5: Validation & Presentation
 1. Run full test suite—no regressions
 2. Review your own code for clarity, security, performance

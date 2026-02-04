@@ -46,9 +46,28 @@ case "$AGENT_TYPE" in
             CONTEXT_PARTS+=("CRITICAL FIRST ACTION: No worktree detected. You MUST create a git worktree BEFORE writing any code. Run: git worktree add ../\<feature-name\> -b \<feature-name\> main — then cd into the worktree and work there. Do NOT write source code on main.")
         fi
         CONTEXT_PARTS+=("Role: Implementer — test-first development in isolated worktrees. Add @decision annotations to 50+ line files. NEVER work on main. The branch-guard hook will DENY any source file writes on main.")
+        # Inject test status
+        TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
+        if [[ -f "$TEST_STATUS_FILE" ]]; then
+            TS_RESULT=$(cut -d'|' -f1 "$TEST_STATUS_FILE")
+            TS_FAILS=$(cut -d'|' -f2 "$TEST_STATUS_FILE")
+            if [[ "$TS_RESULT" == "fail" ]]; then
+                CONTEXT_PARTS+=("WARNING: Tests currently FAILING ($TS_FAILS failures). Fix before proceeding.")
+            fi
+        fi
+        CONTEXT_PARTS+=("VERIFICATION: Before committing, discover project MCP tools and use them to verify. Present verification checkpoint to user with live test instructions. User must confirm before commit.")
         ;;
     guardian)
         CONTEXT_PARTS+=("Role: Guardian — Update MASTER_PLAN.md ONLY at phase boundaries: when a merge completes a phase, update status to completed, populate Decision Log, present diff to user. For non-phase-completing merges, do NOT update the plan — close the relevant GitHub issues instead. Always: verify @decision annotations, check for staged secrets, require explicit approval.")
+        # Inject test status
+        TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
+        if [[ -f "$TEST_STATUS_FILE" ]]; then
+            TS_RESULT=$(cut -d'|' -f1 "$TEST_STATUS_FILE")
+            TS_FAILS=$(cut -d'|' -f2 "$TEST_STATUS_FILE")
+            if [[ "$TS_RESULT" == "fail" ]]; then
+                CONTEXT_PARTS+=("CRITICAL: Tests FAILING ($TS_FAILS failures). Do NOT commit/merge until tests pass.")
+            fi
+        fi
         ;;
     Bash|Explore)
         # Lightweight agents — minimal context

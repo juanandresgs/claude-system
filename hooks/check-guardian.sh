@@ -74,6 +74,24 @@ if [[ -n "$RESPONSE_TEXT" ]]; then
     fi
 fi
 
+# Check 5: Test status for git operations
+TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
+if [[ -f "$TEST_STATUS_FILE" ]]; then
+    TEST_RESULT=$(cut -d'|' -f1 "$TEST_STATUS_FILE")
+    TEST_FAILS=$(cut -d'|' -f2 "$TEST_STATUS_FILE")
+    TEST_TIME=$(cut -d'|' -f3 "$TEST_STATUS_FILE")
+    NOW=$(date +%s)
+    AGE=$(( NOW - TEST_TIME ))
+    if [[ "$TEST_RESULT" == "fail" && "$AGE" -lt 1800 ]]; then
+        HAS_GIT_OP=$(echo "$RESPONSE_TEXT" | grep -iE 'merged|committed|git merge|git commit' || echo "")
+        if [[ -n "$HAS_GIT_OP" ]]; then
+            ISSUES+=("CRITICAL: Tests failing ($TEST_FAILS) when git operations were performed")
+        else
+            ISSUES+=("Tests failing ($TEST_FAILS failures) — address before next git operation")
+        fi
+    fi
+fi
+
 # Build context message
 CONTEXT=""
 if [[ ${#ISSUES[@]} -gt 0 ]]; then

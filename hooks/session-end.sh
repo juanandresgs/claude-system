@@ -27,6 +27,7 @@ rm -f "$PROJECT_ROOT/.claude/.prompt-count-"*
 rm -f "$PROJECT_ROOT/.claude/.lint-cache"
 rm -f "$PROJECT_ROOT/.claude/.test-runner."*
 rm -f "$PROJECT_ROOT/.claude/.test-gate-strikes"
+rm -f "$PROJECT_ROOT/.claude/.test-gate-cold-warned"
 rm -f "$PROJECT_ROOT/.claude/.track."*
 
 # DO NOT delete (cross-session state):

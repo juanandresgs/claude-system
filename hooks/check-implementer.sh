@@ -72,6 +72,22 @@ if [[ -n "$RESPONSE_TEXT" ]]; then
     fi
 fi
 
+# Check 4: Test status verification
+TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
+if [[ -f "$TEST_STATUS_FILE" ]]; then
+    TEST_RESULT=$(cut -d'|' -f1 "$TEST_STATUS_FILE")
+    TEST_FAILS=$(cut -d'|' -f2 "$TEST_STATUS_FILE")
+    TEST_TIME=$(cut -d'|' -f3 "$TEST_STATUS_FILE")
+    NOW=$(date +%s)
+    AGE=$(( NOW - TEST_TIME ))
+    if [[ "$TEST_RESULT" == "fail" && "$AGE" -lt 1800 ]]; then
+        ISSUES+=("Tests failing ($TEST_FAILS failures, ${AGE}s ago) — implementation not complete")
+    fi
+else
+    # No test results at all — warn (project may not have tests, so advisory)
+    ISSUES+=("No test results found — verify tests were run before declaring done")
+fi
+
 # Build context message
 CONTEXT=""
 if [[ ${#ISSUES[@]} -gt 0 ]]; then
