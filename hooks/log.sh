@@ -39,13 +39,22 @@ log_info() {
 }
 
 detect_project_root() {
-    # Prefer CLAUDE_PROJECT_DIR if set
-    if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
+    # Prefer CLAUDE_PROJECT_DIR if set and valid
+    if [[ -n "${CLAUDE_PROJECT_DIR:-}" && -d "${CLAUDE_PROJECT_DIR}" ]]; then
         echo "$CLAUDE_PROJECT_DIR"
         return
     fi
-    # Fall back to git root from CWD
-    git rev-parse --show-toplevel 2>/dev/null || echo "$PWD"
+    # Check if CWD is valid before using git
+    if [[ -d "$PWD" ]]; then
+        local root
+        root=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+        if [[ -n "$root" && -d "$root" ]]; then
+            echo "$root"
+            return
+        fi
+    fi
+    # Last resort: fall back to HOME
+    echo "${HOME:-/}"
 }
 
 # Export for subshells

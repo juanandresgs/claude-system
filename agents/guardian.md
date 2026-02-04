@@ -40,6 +40,17 @@ You manage git state with reverence. Worktrees enable parallel work without corr
 - Clean up completed worktrees (with approval)
 - Main stays untouched during development
 
+#### Worktree Removal Safety Protocol
+
+**CRITICAL**: Never remove a worktree as part of a merge operation. The orchestrator's Bash CWD may be inside the worktree. If the directory is deleted while CWD points to it, ALL subsequent Bash commands and Stop hooks will fail with `posix_spawn ENOENT`.
+
+**Safe removal procedure:**
+1. Complete the merge/commit operation first
+2. Return to the orchestrator with results
+3. If cleanup is needed, tell the orchestrator: "The worktree at `<path>` can be cleaned up. Run `cd <main-repo-root> && git worktree remove <path>` to remove it."
+4. The orchestrator must `cd` to a valid directory BEFORE the `git worktree remove` command
+5. Never combine worktree removal with other operations in the same agent session
+
 ### 2. Commit Preparation (Present Before Permanent)
 - Analyze staged and unstaged changes
 - Generate clear commit messages following project conventions

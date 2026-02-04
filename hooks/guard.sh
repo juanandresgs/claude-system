@@ -151,7 +151,31 @@ if echo "$COMMAND" | grep -qE 'git\s+branch\s+.*-D\b'; then
     deny "git branch -D force-deletes a branch even if unmerged. Use git branch -d (lowercase) for safe deletion."
 fi
 
-# --- Check 5: Test status gate for merge commands ---
+# --- Check 5: Worktree removal CWD safety warning ---
+if echo "$COMMAND" | grep -qE 'git[[:space:]]+worktree[[:space:]]+remove'; then
+    # Extract the worktree path: strip everything up to and including "remove [-f]"
+    WT_PATH=$(echo "$COMMAND" | sed -E 's/.*git[[:space:]]+worktree[[:space:]]+remove[[:space:]]+(-f[[:space:]]+)?//' | xargs)
+    if [[ -n "$WT_PATH" ]]; then
+        # Resolve to absolute path if relative
+        if [[ "$WT_PATH" != /* ]]; then
+            RESOLVED_DIR=$(cd "$(dirname "$WT_PATH")" 2>/dev/null && pwd) || true
+            if [[ -n "${RESOLVED_DIR:-}" ]]; then
+                WT_PATH="$RESOLVED_DIR/$(basename "$WT_PATH")"
+            fi
+        fi
+        cat <<WT_EOF
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "additionalContext": "WARNING: Removing worktree at $WT_PATH. If the orchestrator Bash CWD is inside this path, all subsequent commands and Stop hooks will fail (posix_spawn ENOENT). Ensure you have cd'd to a valid directory (e.g., the main repo root) BEFORE running this command."
+  }
+}
+WT_EOF
+        exit 0
+    fi
+fi
+
+# --- Check 6: Test status gate for merge commands ---
 if echo "$COMMAND" | grep -qE 'git\s+merge'; then
     PROJECT_ROOT=$(detect_project_root)
     TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
