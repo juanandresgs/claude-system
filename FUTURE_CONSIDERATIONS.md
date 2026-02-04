@@ -154,6 +154,77 @@ Not acceptable:
 
 ---
 
+## Hook Refactoring: Shared Library Consolidation
+
+**What it is**: Eliminate duplicate logic across hooks by consolidating into `context-lib.sh` shared functions, and standardize all hooks to use `get_field()` instead of raw `jq`.
+
+**Why it was deferred**:
+- System is functional today — no runtime failures
+- Requires coordinated changes across 10+ hook files
+- Best done in a worktree with test verification
+
+**Identified issues (assessed 2026-02-04)**:
+
+### High-Value: Session Lookup Consolidation
+
+Session file lookup logic exists in **4 places** with varying robustness:
+
+| Location | Glob fallback | Legacy `.session-decisions` | Status |
+|----------|:---:|:---:|--------|
+| `compact-preserve.sh` (lines 43-56) | Yes | Yes | Most robust |
+| `surface.sh` (lines 29-41) | Yes | Yes | Nearly identical to compact-preserve |
+| `session-summary.sh` (lines 26-32) | No | No | Simpler variant |
+| `context-lib.sh` `get_session_changes()` (lines 78-93) | No | No | **Weakest — shared library version** |
+
+The shared library version is the *weakest* implementation. The inline copies have already evolved beyond it.
+
+**Fix**: Port glob/legacy fallback into `context-lib.sh`'s `get_session_changes()`, then replace all inline implementations with calls to the shared function.
+
+### High-Value: `compact-preserve.sh` → Source `context-lib.sh`
+
+`compact-preserve.sh` is the **only hook** that reimplements context-lib-equivalent operations (git state, plan parsing, session lookup) instead of sourcing the shared library. Three blocks of inline code duplicate shared functions with different variable names.
+
+**Fix**: Add `source context-lib.sh`, replace inline blocks with `get_git_state()`, `get_plan_status()`, `get_session_changes()`. Keep `COMMIT_COUNT` as a one-liner supplement (not in shared lib).
+
+### Medium-Value: `session-summary.sh` Hardcodes `SOURCE_EXTENSIONS`
+
+Line 44 hardcodes the extension list that `context-lib.sh` exports as `$SOURCE_EXTENSIONS`. The hook already sources `context-lib.sh` but doesn't use the variable.
+
+**Fix**: Replace hardcoded string with `$SOURCE_EXTENSIONS` reference.
+
+### Low-Value: Raw `jq` Instead of `get_field()` (Systemic)
+
+9 of 16 hooks use raw `echo "$HOOK_INPUT" | jq -r ...` instead of the `get_field()` helper from `log.sh`. Only 7 hooks use `get_field()` consistently. Affected hooks: `code-review.sh`, `plan-validate.sh`, `test-runner.sh`, `plan-check.sh` (partially), `notify.sh`, `forward-motion.sh`, `subagent-start.sh`, `surface.sh`, `session-summary.sh`, `prompt-submit.sh`.
+
+**Fix**: Mechanical replacement. Zero behavioral change today.
+
+### Cosmetic: `context-lib.sh` File Permissions
+
+644 instead of 755. All other `.sh` files are 755. Works fine (sourced, not executed) but inconsistent.
+
+**Fix**: `chmod +x hooks/context-lib.sh`
+
+### Informational: `session-end.sh` Bypasses `read_input`
+
+Reads stdin directly via `jq -r '.reason // "unknown"'` instead of using `read_input`/`get_field()`. Intentional performance optimization for large session histories. Document as a known exception, not a bug.
+
+**When to tackle**:
+- Next time hooks are being modified (natural opportunity)
+- Before adding new shared library functions (ensures all consumers benefit)
+
+**Implementation approach**:
+1. Create worktree
+2. Port robust session lookup into `context-lib.sh`
+3. Refactor `compact-preserve.sh` to source `context-lib.sh`
+4. Fix `session-summary.sh` SOURCE_EXTENSIONS reference
+5. Batch convert raw `jq` → `get_field()` across all hooks
+6. `chmod +x context-lib.sh`
+7. Verify all hooks still pass (test with sample JSON inputs)
+
+**Complexity**: Low-Medium. All changes are mechanical refactoring with no behavioral changes.
+
+---
+
 ## Summary
 
 | Pattern | Status | Revisit Trigger |
@@ -162,5 +233,6 @@ Not acceptable:
 | Meta-Agent | Deferred | Recurring domain-specific needs |
 | Error Recovery Hook | Blocked | API support needed |
 | RAG / Persistent Memory | Deferred | Massive codebase, cross-project queries |
+| Hook Refactoring: Shared Lib Consolidation | Deferred | Next hook modification or new shared function |
 | AI Agent Hooks | **Rejected** | Never |
 | Auto-Approval | **Rejected** | Never |
