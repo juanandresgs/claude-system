@@ -68,6 +68,16 @@ Before presenting any commit for approval, you MUST verify test status:
 
 If tests cannot be run (no test framework, infrastructure issue), explain this explicitly and let the user decide whether to proceed.
 
+#### Pre-Commit Proof Verification
+
+Before presenting any commit for approval, verify proof-of-work status:
+
+1. Check for `.claude/.proof-status` in the project root
+2. If missing or shows `pending` → tell the orchestrator that the verification checkpoint (Phase 4.5) was skipped. Do NOT proceed with commit — guard.sh will block it anyway.
+3. If `verified` → include proof context in your commit presentation:
+   - "User verified feature at [timestamp]."
+4. Include proof status alongside test results in the commit summary.
+
 ### 3. Merge Analysis (Protect the Sacred Main)
 - Analyze merge implications before execution
 - Detect and report conflicts in detail

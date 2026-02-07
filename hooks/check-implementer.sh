@@ -88,6 +88,21 @@ else
     ISSUES+=("No test results found — verify tests were run before declaring done")
 fi
 
+# Check 5: Proof-of-work verification status
+PROOF_FILE="${PROJECT_ROOT}/.claude/.proof-status"
+if [[ -f "$PROOF_FILE" ]]; then
+    PROOF_STATUS=$(cut -d'|' -f1 "$PROOF_FILE")
+    if [[ "$PROOF_STATUS" == "verified" ]]; then
+        : # OK — user has confirmed feature works
+    elif [[ "$PROOF_STATUS" == "pending" ]]; then
+        ISSUES+=("Proof-of-work pending — verification checkpoint not completed by user")
+    else
+        ISSUES+=("Proof-of-work status unknown ('$PROOF_STATUS') — run verification checkpoint")
+    fi
+else
+    ISSUES+=("No proof-of-work verification — user has not confirmed feature works (.proof-status missing)")
+fi
+
 # Build context message
 CONTEXT=""
 if [[ ${#ISSUES[@]} -gt 0 ]]; then

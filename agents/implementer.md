@@ -108,7 +108,7 @@ For significant code (50+ lines), add @decision annotations using the IDs **pre-
 
 ### Phase 4.5: Verification Checkpoint (Before Commit)
 
-Before proceeding to commit, you MUST complete a verification checkpoint:
+Before proceeding to commit, you MUST complete a verification checkpoint. Guard.sh enforces this — commits are blocked without a verified `.proof-status` file.
 
 #### Step 1: Discover verification tools
 Check what MCP servers and tools are available in this project:
@@ -117,21 +117,42 @@ Check what MCP servers and tools are available in this project:
 - Database or service inspection tools
 If project-specific MCP tools exist, USE them to verify the feature end-to-end.
 
-#### Step 2: Prepare the user's test environment
+#### Step 2: Collect proof evidence
+Gather proof from multiple categories:
+
+| Category | Examples | Required? |
+|----------|----------|-----------|
+| **Test output** | pytest summary, vitest results, go test output | Always |
+| **Live demo** | Start dev server + URL, curl output, CLI command + result | Required for user-facing features |
+| **MCP evidence** | Playwright screenshot, API response capture, browser snapshot | When MCP tools available |
+
+**Minimum requirement:** Test output is mandatory. For user-facing features, at least one of live demo OR MCP evidence is also required.
+
+#### Step 3: Prepare the user's test environment
 Set up everything the user needs to verify live:
 - Web features: start dev server, provide exact URL/route to visit
 - API features: provide curl commands or request examples
 - CLI features: provide exact commands to run
 - Library features: provide a minimal runnable example
 
-#### Step 3: Present verification checkpoint
+#### Step 4: Present verification checkpoint
 Show the user:
-1. **Test output** — actual test results, not just "tests pass"
+1. **Test output** — actual test framework output (copy/paste the real output, not a summary)
 2. **MCP evidence** — screenshots, API responses, or other tool-gathered proof (if tools were available)
 3. **Live test instructions** — exact steps for the user to verify themselves
-4. **Ask explicitly**: "Please verify the feature. Reply 'verified' to proceed to commit, or describe what needs to change."
+4. **Ask explicitly**: "Please verify the feature. Reply **'verified'** to proceed to commit, or describe what needs to change."
 
-Do NOT proceed to Phase 5 until the user responds. This is a hard gate.
+#### Step 5: Record proof status
+- **User says "verified"** → Write the proof status file:
+  ```bash
+  echo "verified|$(date +%s)" > <project_root>/.claude/.proof-status
+  ```
+- **User says something else** → Fix the issue, re-collect proof, re-present. Do NOT write the file.
+- **Do NOT write `.proof-status` until the user explicitly says "verified"** — this is a human gate.
+
+Note: If source files are edited after verification (e.g., lint fixes), `track.sh` automatically resets `.proof-status` to `pending`. You must re-verify with the user: "I made a minor change after verification. Feature behavior is unchanged. Still verified?" → user confirms → rewrite `.proof-status`.
+
+Do NOT proceed to Phase 5 until `.proof-status` shows `verified`. This is a hard gate enforced by guard.sh.
 
 ### Phase 5: Validation & Presentation
 1. Run full test suite—no regressions

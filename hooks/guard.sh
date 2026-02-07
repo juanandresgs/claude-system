@@ -219,5 +219,27 @@ if echo "$COMMAND" | grep -qE 'git\s+commit'; then
     fi
 fi
 
+# --- Check 8: Proof-of-work verification gate ---
+# Requires .proof-status = "verified" before commit/merge.
+# Same meta-repo exemption as test gates (no feature verification needed for config).
+if echo "$COMMAND" | grep -qE 'git\s+(commit|merge)'; then
+    if echo "$COMMAND" | grep -qE 'git\s+commit'; then
+        PROOF_DIR=$(extract_git_target_dir "$COMMAND")
+    else
+        PROOF_DIR=$(detect_project_root)
+    fi
+    if ! is_claude_meta_repo "$PROOF_DIR"; then
+        PROOF_FILE="${PROOF_DIR}/.claude/.proof-status"
+        if [[ -f "$PROOF_FILE" ]]; then
+            PROOF_STATUS=$(cut -d'|' -f1 "$PROOF_FILE")
+            if [[ "$PROOF_STATUS" != "verified" ]]; then
+                deny "Cannot proceed: proof-of-work verification is '$PROOF_STATUS'. The user must see the feature work before committing. Run the verification checkpoint (Phase 4.5) and get user confirmation."
+            fi
+        else
+            deny "Cannot proceed: no proof-of-work verification (.claude/.proof-status missing). The user must see the feature work before committing. Run the verification checkpoint (Phase 4.5) and get user confirmation."
+        fi
+    fi
+fi
+
 # All checks passed
 exit 0

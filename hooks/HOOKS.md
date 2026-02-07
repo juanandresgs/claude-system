@@ -128,6 +128,7 @@ SessionStart    → session-init.sh (git state, plan status, worktree warnings)
 UserPromptSubmit → prompt-submit.sh (keyword-based context injection)
                     ↓
 PreToolUse:Bash → guard.sh (sacred practice guardrails + rewrites)
+                   auto-review.sh (intelligent command auto-approval)
 PreToolUse:W/E  → test-gate.sh → mock-gate.sh → branch-guard.sh → doc-gate.sh → plan-check.sh
                     ↓
 [Tool executes]
@@ -161,6 +162,18 @@ Checks 6 (merge) and 7 (commit) require test evidence before allowing git operat
 
 **Exemption:** The `~/.claude` meta-infrastructure repo is exempt from test evidence requirements (no test framework by design). Uses `is_claude_meta_repo()` helper.
 
+Check 8 (commit/merge) requires proof-of-work verification — the user must have seen the feature work before code is committed:
+
+- **`.proof-status` missing** → DENY (feature not verified by user)
+- **`.proof-status` shows `pending`** → DENY (verification incomplete or invalidated by source change)
+- **`.proof-status` shows `verified`** → ALLOW
+
+**Staleness:** `track.sh` resets `.proof-status` to `pending` when non-test source files are modified after verification. This ensures the user always verifies the final state of the code.
+
+**Exemption:** Same `is_claude_meta_repo()` exemption — meta-infrastructure commits don't require feature verification.
+
+**Artifact:** `.claude/.proof-status` — Format: `STATUS|TIMESTAMP` (e.g., `verified|1707500000`). Written by implementer agent after user confirms. Read by guard.sh, check-implementer.sh, Guardian agent.
+
 ### mock-gate.sh — Mock Detection Gate (Escalating)
 
 PreToolUse hook for Write|Edit. Detects internal mocking patterns in test files and enforces Sacred Practice #5.
@@ -181,6 +194,26 @@ PreToolUse hook for Write|Edit. Detects internal mocking patterns in test files 
 **External boundary exemptions:** `requests`, `httpx`, `redis`, `sqlalchemy`, `boto3`, `axios`, `node-fetch`, `pg`, `mongodb`, `aws-sdk`, `pytest-httpx`, `httpretty`, `responses`, `nock`, `msw`, `testcontainers`
 
 **State file:** `.claude/.mock-gate-strikes` (format: `count|epoch`, cleaned by session-end.sh)
+
+### auto-review.sh — Intelligent Command Auto-Approval
+
+PreToolUse hook for Bash. Runs alongside guard.sh. While guard.sh denies/rewrites dangerous commands, auto-review.sh auto-approves safe ones — reducing user permission prompts without sacrificing safety.
+
+**Three-Tier Classification:**
+
+| Tier | Behavior | Examples |
+|------|----------|---------|
+| 1 — Inherently Safe | Auto-approve regardless of arguments | `ls`, `cat`, `grep`, `cd`, `echo`, `sort`, `wc`, `date` |
+| 2 — Behavior-Dependent | Analyze subcommand + flags | `git status` ✓, `git push` ✗; `curl` GET ✓, `curl -X POST` ✗ |
+| 3 — Always Defer | Never auto-approve | `rm`, `sudo`, `kill`, `ssh`, `eval`, `bash -c` |
+
+**Compound Command Handling:** Commands joined with `&&`, `||`, `;`, or `|` are decomposed. Each segment is analyzed independently. ALL segments must be safe for auto-approval; ANY risky segment defers the entire command.
+
+**Recursive $() Analysis:** Command substitutions (`$()` and backticks) are recursively analyzed up to depth 2. `cd $(git rev-parse --show-toplevel)` auto-approves because both `cd` (T1) and `git rev-parse` (T2→read-only) are safe.
+
+**Dangerous Flag Detection:** Certain flags escalate risk regardless of tier: `--force`, `--hard`, `--no-verify`, `-f` (on git).
+
+**Interaction with guard.sh:** Guard runs first (sequential). If guard denies, auto-review never runs. If guard allows/passes through, auto-review classifies the command. If auto-review approves, the user skips the permission prompt. If auto-review defers (exits silently), the normal permission prompt appears.
 
 ---
 

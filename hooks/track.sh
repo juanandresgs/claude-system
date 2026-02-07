@@ -36,4 +36,18 @@ echo "$FILE_PATH" > "$TMPFILE"
 cat "$TMPFILE" >> "$TRACKING_FILE"
 rm -f "$TMPFILE"
 
+# --- Invalidate proof-status when non-test source files change ---
+# If user verified the feature and then source code changes, proof is stale.
+PROOF_FILE="$TRACKING_DIR/.proof-status"
+if [[ -f "$PROOF_FILE" ]]; then
+    PROOF_STATUS=$(cut -d'|' -f1 "$PROOF_FILE")
+    if [[ "$PROOF_STATUS" == "verified" ]]; then
+        # Only invalidate for source file changes (not tests, config, docs)
+        if [[ "$FILE_PATH" =~ \.(ts|tsx|js|jsx|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh)$ ]] \
+           && [[ ! "$FILE_PATH" =~ (\.test\.|\.spec\.|__tests__|\.config\.|node_modules|vendor|dist|\.git|\.claude) ]]; then
+            echo "pending|$(date +%s)" > "$PROOF_FILE"
+        fi
+    fi
+fi
+
 exit 0
