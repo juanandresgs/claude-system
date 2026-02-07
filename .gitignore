@@ -44,6 +44,15 @@ plans/
 # Archive (recoverable deletions, not tracked)
 .archive/
 
+# Agent findings (one-shot inter-agent delivery, deleted after injection)
+.agent-findings
+
+# Audit log (append-only session log, trimmed at session-end)
+.audit-log
+
+# Todo count cache (regenerated from GitHub API on every HUD call)
+.todo-count
+
 # Git worktrees (feature isolation, never tracked)
 .worktrees/
 
