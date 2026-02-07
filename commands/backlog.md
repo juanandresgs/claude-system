@@ -10,7 +10,12 @@ Create, list, close, and triage todos (GitHub Issues labeled `claude-todo`).
 
 ## JSON output pattern
 
-**IMPORTANT:** For read-only list commands, use `--json` so the Bash tool block shows compact JSON (minimal visual noise), then format a clean table from the structured data. Do NOT also display the raw JSON — only show your formatted table.
+**IMPORTANT:** For read-only list commands, redirect `--json` output to a scratchpad file so the user never sees raw JSON in the Bash tool output. Then use the Read tool to silently parse the file and format a clean table.
+
+Pattern:
+1. `~/.claude/scripts/todo.sh list <flags> --json > "$SCRATCHPAD/backlog.json"` (Bash — produces no visible output)
+2. Read `$SCRATCHPAD/backlog.json` (Read tool — silent ingestion)
+3. Format the parsed data into the display table below
 
 Write commands (add, done) stay as-is — their confirmation output is useful raw. The `stale` command doesn't support `--json` — its raw output is short and already well-formatted, so run it directly.
 
@@ -20,9 +25,9 @@ Parse `$ARGUMENTS` to determine the action:
 
 ### No arguments → List all todos
 ```bash
-~/.claude/scripts/todo.sh list --all --json
+~/.claude/scripts/todo.sh list --all --json > "$SCRATCHPAD/backlog.json"
 ```
-Format the JSON into the display format below.
+Read `$SCRATCHPAD/backlog.json`, then format into the display format below.
 
 ### First word is `done` → Close a todo
 ```bash
@@ -37,7 +42,7 @@ Extract the issue number from the remaining arguments. If the user specifies `--
 Show stale items and ask the user which to close, keep, or reprioritize.
 
 ### First word is `review` → Interactive triage
-1. Run `~/.claude/scripts/todo.sh list --all --json`
+1. Run `~/.claude/scripts/todo.sh list --all --json > "$SCRATCHPAD/backlog.json"`, then Read the file.
 2. Parse the JSON.
 3. **Cross-reference scan:** Before presenting items, identify semantically related issues across both scopes (project and global). Flag pairs/clusters that should be linked or merged.
 4. Present each todo one by one, noting any related issues found
@@ -46,10 +51,10 @@ Show stale items and ask the user which to close, keep, or reprioritize.
 
 ### Argument is `--project` or `--global` alone → Scoped listing
 ```bash
-~/.claude/scripts/todo.sh list --project --json
-~/.claude/scripts/todo.sh list --global --json
+~/.claude/scripts/todo.sh list --project --json > "$SCRATCHPAD/backlog.json"
+~/.claude/scripts/todo.sh list --global --json > "$SCRATCHPAD/backlog.json"
 ```
-Format the JSON into the display format below.
+Read `$SCRATCHPAD/backlog.json`, then format into the display format below.
 
 ### Otherwise → Create a new todo
 Treat the entire `$ARGUMENTS` as todo text (plus any flags like `--global`, `--priority=high|medium|low`):

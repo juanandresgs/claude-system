@@ -3,7 +3,7 @@
 # PreToolUse hook — matcher: Bash
 #
 # Three-tier command classification engine that auto-approves safe commands
-# and denies risky ones with a structured explanation for the model to present.
+# and silently defers everything else to the normal permission system.
 #
 # Tier 1 — Inherently safe (read-only, navigation, output): always approve
 # Tier 2 — Behavior-dependent (git, npm, docker, etc.): analyze subcommand + flags
@@ -46,21 +46,9 @@ EOF
     exit 0
 }
 
-# Structured deny with risk explanation for the model to present to the user.
-# The model receives this and should explain the risk before asking permission.
-deny_risky() {
-    local reason="$1"
-    # Escape special chars for JSON
-    reason=$(echo "$reason" | sed 's/"/\\"/g; s/\t/ /g')
-    cat <<EOF
-{
-  "hookSpecificOutput": {
-    "hookEventName": "PreToolUse",
-    "permissionDecision": "deny",
-    "permissionDecisionReason": "auto-review FLAGGED: $reason\n\nPresent this analysis to the user and ask whether to proceed. If approved, re-run the exact same command."
-  }
-}
-EOF
+# Silent defer — exit with no output, letting the normal permission system
+# handle the command (Guardian for git ops, standard prompt for everything else).
+defer() {
     exit 0
 }
 
@@ -123,12 +111,32 @@ is_safe() {
 }
 
 # Split compound command into segments on &&, ||, ;
-# Pipe chains are treated as a single unit analyzed left-to-right
+# Pipe chains are treated as a single unit analyzed left-to-right.
+# Quote-aware: semicolons inside single or double quotes are preserved.
 decompose_command() {
     local cmd="$1"
-    # Use a simple approach: split on && || ; that aren't inside quotes
-    # For robustness, use awk-style splitting
-    echo "$cmd" | sed -E 's/\s*&&\s*/\n/g; s/\s*\|\|\s*/\n/g; s/\s*;\s*/\n/g'
+    echo "$cmd" | awk '
+    {
+        n = length($0); sq = 0; dq = 0; start = 1
+        for (i = 1; i <= n; i++) {
+            c = substr($0, i, 1)
+            if (c == "\047" && !dq) sq = !sq
+            else if (c == "\"" && !sq) dq = !dq
+            else if (!sq && !dq) {
+                if (c == ";") {
+                    print substr($0, start, i - start)
+                    start = i + 1
+                } else if (c == "&" && substr($0, i+1, 1) == "&") {
+                    print substr($0, start, i - start)
+                    i++; start = i + 1
+                } else if (c == "|" && substr($0, i+1, 1) == "|") {
+                    print substr($0, start, i - start)
+                    i++; start = i + 1
+                }
+            }
+        }
+        if (start <= n) print substr($0, start)
+    }'
 }
 
 # Analyze a single segment (may contain pipes)
@@ -806,9 +814,7 @@ if is_safe "$COMMAND" 0; then
     approve "auto-review: all command segments classified as safe"
 fi
 
-# Not safe — deny with structured explanation for the model to present
-if [[ -n "$RISK_REASON" ]]; then
-    deny_risky "$RISK_REASON"
-else
-    deny_risky "Command could not be classified as safe — unknown risk profile"
-fi
+# Not safe — silently defer to the normal permission system.
+# The Guardian handles git commit/push/merge; everything else gets the
+# standard user permission prompt.
+defer

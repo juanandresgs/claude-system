@@ -120,7 +120,7 @@
           },
           {
             "type": "command",
-            "command": "echo skip",
+            "command": "$HOME/.claude/hooks/auto-review.sh",
             "timeout": 5
           }
         ]

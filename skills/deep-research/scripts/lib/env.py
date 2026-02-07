@@ -14,29 +14,26 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 # Add shared lib to path
-_shared_lib = Path(__file__).resolve().parents[3] / "scripts" / "lib"
+_shared_lib = Path(__file__).resolve().parents[4] / "scripts" / "lib"
 if str(_shared_lib) not in sys.path:
     sys.path.insert(0, str(_shared_lib))
 
-from env import load_env_file, CENTRAL_ENV  # noqa: E402
-
-LEGACY_CONFIG = Path.home() / ".config" / "deep-research" / ".env"
+from keychain import load_env_file, CENTRAL_ENV  # noqa: E402
 
 _KEY_NAMES = ('OPENAI_API_KEY', 'PERPLEXITY_API_KEY', 'GEMINI_API_KEY')
 
 
 def get_config() -> Dict[str, Optional[str]]:
-    """Load configuration from central .env, legacy .env, and environment.
+    """Load configuration from ~/.claude/.env and environment.
 
-    Priority: environment > ~/.claude/.env > ~/.config/deep-research/.env
+    Priority: environment > ~/.claude/.env
     """
     import os
 
-    legacy_env = load_env_file(LEGACY_CONFIG)
     central_env = load_env_file(CENTRAL_ENV)
 
     return {
-        key: os.environ.get(key) or central_env.get(key) or legacy_env.get(key)
+        key: os.environ.get(key) or central_env.get(key)
         for key in _KEY_NAMES
     }
 
@@ -54,5 +51,5 @@ def get_available_providers(config: Dict[str, Optional[str]]) -> List[str]:
 
 
 def config_exists() -> bool:
-    """Check if any configuration file exists."""
-    return CENTRAL_ENV.exists() or LEGACY_CONFIG.exists()
+    """Check if central configuration file exists."""
+    return CENTRAL_ENV.exists()
