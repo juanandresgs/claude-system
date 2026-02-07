@@ -56,16 +56,19 @@ EOF
     exit 0
 }
 
-# --- Check 1: /tmp/ writes → rewrite to project tmp/ ---
-# Allow: /private/tmp/claude-501/ (Claude scratchpad)
-if echo "$COMMAND" | grep -qE '(>|>>)\s*/tmp/|mv\s+.*\s+/tmp/|cp\s+.*\s+/tmp/|mkdir\s+(-p\s+)?/tmp/|tee\s+/tmp/'; then
+# --- Check 1: /tmp/ and /private/tmp/ writes → rewrite to project tmp/ ---
+# On macOS, /tmp → /private/tmp (symlink). Both forms must be caught.
+# Allow: /private/tmp/claude-*/ (Claude Code scratchpad)
+TMP_PATTERN='(>|>>|mv\s+.*|cp\s+.*|tee)\s*(/private)?/tmp/|mkdir\s+(-p\s+)?(/private)?/tmp/'
+if echo "$COMMAND" | grep -qE "$TMP_PATTERN"; then
     if echo "$COMMAND" | grep -q '/private/tmp/claude-'; then
         : # Claude scratchpad — allowed as-is
     else
-        # Rewrite /tmp/ to project tmp/ directory
+        # Rewrite both /private/tmp/ and /tmp/ to project tmp/ directory
+        # Normalize /private/tmp/ → /tmp/ first, then single replacement avoids double-expansion
         PROJECT_ROOT=$(detect_project_root)
         PROJECT_TMP="$PROJECT_ROOT/tmp"
-        REWRITTEN=$(echo "$COMMAND" | sed "s|/tmp/|$PROJECT_TMP/|g")
+        REWRITTEN=$(echo "$COMMAND" | sed "s|/private/tmp/|/tmp/|g" | sed "s|/tmp/|$PROJECT_TMP/|g")
         # Ensure project tmp/ directory exists
         REWRITTEN="mkdir -p $PROJECT_TMP && $REWRITTEN"
         rewrite "$REWRITTEN" "Rewrote /tmp/ to project tmp/ directory. Sacred Practice #3: artifacts belong with their project."

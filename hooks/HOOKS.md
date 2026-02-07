@@ -81,7 +81,7 @@ Stop hooks receive `{"stop_hook_active": true/false, "response": "..."}` on stdi
 ### Rewrite Pattern
 
 Three checks in guard.sh use transparent rewrites (the model's command is silently replaced):
-1. `/tmp/` writes → project `tmp/` directory (Check 1)
+1. `/tmp/` and `/private/tmp/` writes → project `tmp/` directory (Check 1). On macOS `/tmp` → `/private/tmp` symlink; both forms are caught. Claude scratchpad (`/private/tmp/claude-*/`) is exempt.
 2. `--force` → `--force-with-lease` (Check 3)
 3. `git worktree remove` → prepends `cd "<main-worktree>" &&` (Check 5)
 
@@ -197,15 +197,15 @@ PreToolUse hook for Write|Edit. Detects internal mocking patterns in test files 
 
 ### auto-review.sh — Intelligent Command Auto-Approval
 
-PreToolUse hook for Bash. Runs alongside guard.sh. While guard.sh denies/rewrites dangerous commands, auto-review.sh auto-approves safe ones — reducing user permission prompts without sacrificing safety.
+PreToolUse hook for Bash. Runs alongside guard.sh. While guard.sh denies/rewrites dangerous commands, auto-review.sh classifies every command: auto-approves safe ones and denies risky ones with a structured explanation the model presents to the user.
 
 **Three-Tier Classification:**
 
 | Tier | Behavior | Examples |
 |------|----------|---------|
 | 1 — Inherently Safe | Auto-approve regardless of arguments | `ls`, `cat`, `grep`, `cd`, `echo`, `sort`, `wc`, `date` |
-| 2 — Behavior-Dependent | Analyze subcommand + flags | `git status` ✓, `git push` ✗; `curl` GET ✓, `curl -X POST` ✗ |
-| 3 — Always Defer | Never auto-approve | `rm`, `sudo`, `kill`, `ssh`, `eval`, `bash -c` |
+| 2 — Behavior-Dependent | Analyze subcommand + flags; deny with explanation if risky | `git status` ✓, `git push` ✗; `curl` GET ✓, `curl -X POST` ✗ |
+| 3 — Always Deny | Deny with explanation, never auto-approve | `rm`, `sudo`, `kill`, `ssh`, `eval`, `bash -c` |
 
 **Compound Command Handling:** Commands joined with `&&`, `||`, `;`, or `|` are decomposed. Each segment is analyzed independently. ALL segments must be safe for auto-approval; ANY risky segment defers the entire command.
 
@@ -213,7 +213,11 @@ PreToolUse hook for Bash. Runs alongside guard.sh. While guard.sh denies/rewrite
 
 **Dangerous Flag Detection:** Certain flags escalate risk regardless of tier: `--force`, `--hard`, `--no-verify`, `-f` (on git).
 
-**Interaction with guard.sh:** Guard runs first (sequential). If guard denies, auto-review never runs. If guard allows/passes through, auto-review classifies the command. If auto-review approves, the user skips the permission prompt. If auto-review defers (exits silently), the normal permission prompt appears.
+**Structured Deny:** When a command is risky, auto-review outputs a `deny` with a detailed reason explaining what was flagged and why. The model receives this and presents the risk analysis to the user, then can re-run the command if approved. This replaces raw permission prompts with intelligent review.
+
+**Interaction with guard.sh:** Guard runs first (sequential). If guard denies, auto-review never runs. If guard allows/passes through, auto-review classifies the command. If auto-review approves, the user skips the permission prompt. If auto-review denies, the model receives the risk explanation and presents it to the user.
+
+**Interaction with settings.json allowlist:** Behavior-dependent commands (git, curl, npm, docker, etc.) are NOT in the allowlist — auto-review.sh is the sole gatekeeper. Only Tier 1 commands (ls, cat, grep, etc.) remain in the allowlist as a fast-path optimization.
 
 ---
 
