@@ -1,4 +1,4 @@
-# JAGS' Claude Code Configuration System
+# JAGS' Batteries-Included Claude Code Config
 
 A multi-agent workflow for Claude Code that enforces plan-first development, worktree isolation, test-first implementation, and approval gates through deterministic hooks.
 
