@@ -103,7 +103,7 @@ if [[ -x "$TODO_SCRIPT" ]]; then
     if [[ -n "$ISSUE_REF" ]]; then
         ISSUE_NUM="${ISSUE_REF#\#}"
         # Auto-claim — fire and forget, don't block the prompt
-        if is_git_repo; then
+        if [[ -d "$PROJECT_ROOT/.git" ]]; then
             "$TODO_SCRIPT" claim "$ISSUE_NUM" --auto 2>/dev/null || true
         else
             "$TODO_SCRIPT" claim "$ISSUE_NUM" --global --auto 2>/dev/null || true

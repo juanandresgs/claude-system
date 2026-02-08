@@ -1,6 +1,6 @@
 # Hook System Reference
 
-Technical reference for the Claude Code hook system. For philosophy and workflow, see `../CLAUDE.md`.
+Technical reference for the Claude Code hook system. For philosophy and workflow, see `../CLAUDE.md`. For the summary table, see `../README.md`.
 
 ---
 
@@ -110,8 +110,10 @@ Source with: `source "$(dirname "$0")/context-lib.sh"`
 | Function | Populates |
 |----------|-----------|
 | `get_git_state <root>` | `$GIT_BRANCH`, `$GIT_DIRTY_COUNT`, `$GIT_WORKTREES`, `$GIT_WT_COUNT` |
-| `get_plan_status <root>` | `$PLAN_EXISTS`, `$PLAN_PHASE`, `$PLAN_TOTAL_PHASES`, `$PLAN_COMPLETED_PHASES`, `$PLAN_AGE_DAYS` |
+| `get_plan_status <root>` | `$PLAN_EXISTS`, `$PLAN_PHASE`, `$PLAN_TOTAL_PHASES`, `$PLAN_COMPLETED_PHASES`, `$PLAN_IN_PROGRESS_PHASES`, `$PLAN_AGE_DAYS`, `$PLAN_COMMITS_SINCE`, `$PLAN_CHANGED_SOURCE_FILES`, `$PLAN_TOTAL_SOURCE_FILES`, `$PLAN_SOURCE_CHURN_PCT` |
 | `get_session_changes <root>` | `$SESSION_CHANGED_COUNT`, `$SESSION_FILE` |
+| `get_drift_data <root>` | `$DRIFT_UNPLANNED_COUNT`, `$DRIFT_UNIMPLEMENTED_COUNT`, `$DRIFT_MISSING_DECISIONS`, `$DRIFT_LAST_AUDIT_EPOCH` |
+| `get_research_status <root>` | `$RESEARCH_EXISTS`, `$RESEARCH_ENTRY_COUNT` |
 | `is_source_file <path>` | Tests against `$SOURCE_EXTENSIONS` regex |
 | `is_skippable_path <path>` | Tests for config/test/vendor/generated paths |
 | `append_audit <root> <event> <detail>` | Appends to `.claude/.audit-log` |
@@ -151,75 +153,180 @@ Hooks within the same event run **sequentially** in array order from settings.js
 
 ## Hook Details
 
-### guard.sh — Commit/Merge Test Evidence Gate
+### PreToolUse — Block Before Execution
 
-Checks 6 (merge) and 7 (commit) require test evidence before allowing git operations:
+| Hook | Matcher | What It Does |
+|------|---------|--------------|
+| **guard.sh** | Bash | 8 checks: rewrites `/tmp/` paths, `--force` → `--force-with-lease`, worktree CWD safety; blocks commits on main, force push to main, destructive git (`reset --hard`, `clean -f`, `branch -D`); requires test evidence + proof-of-work verification for commits and merges |
+| **auto-review.sh** | Bash | Three-tier command classifier: auto-approves safe commands, defers risky ones to user |
+| **test-gate.sh** | Write\|Edit | Escalating gate: warns on first source write with failing tests, blocks on repeat |
+| **mock-gate.sh** | Write\|Edit | Detects internal mocking patterns; warns first, blocks on repeat |
+| **branch-guard.sh** | Write\|Edit | Blocks source file writes on main/master branch |
+| **doc-gate.sh** | Write\|Edit | Enforces file headers and @decision annotations on 50+ line files; Write = hard deny, Edit = advisory; warns on new root-level markdown files (Sacred Practice #9) |
+| **plan-check.sh** | Write\|Edit | Denies source writes without MASTER_PLAN.md; composite staleness scoring (source churn % + decision drift) warns then blocks when plan diverges from code; bypasses Edit tool, small writes (<20 lines), non-git dirs |
 
-- **`.test-status` missing** → DENY (no test evidence)
-- **`.test-status` shows `fail`** (within 10 min) → DENY (tests failing)
-- **`.test-status` shows non-`pass`** → DENY (unknown/error status)
-- **`.test-status` shows `pass`** → ALLOW
+### PostToolUse — Feedback After Execution
 
-**Exemption:** The `~/.claude` meta-infrastructure repo is exempt from test evidence requirements (no test framework by design). Uses `is_claude_meta_repo()` helper.
+| Hook | Matcher | What It Does |
+|------|---------|--------------|
+| **lint.sh** | Write\|Edit | Auto-detects project linter (ruff, black, prettier, eslint, etc.), runs on modified files. Exit 2 = feedback loop (Claude retries the fix automatically) |
+| **track.sh** | Write\|Edit | Records file changes to `.session-changes-$SESSION_ID`. Also invalidates `.proof-status` when verified source files change — ensuring the user always verifies the final state, not an intermediate one |
+| **code-review.sh** | Write\|Edit | Fires on 20+ line source files (skips tests and config). Injects diff context and suggests `mcp__multi__codereview` for multi-model analysis. Falls back silently if Multi-MCP is unavailable |
+| **plan-validate.sh** | Write\|Edit | Validates MASTER_PLAN.md structure on every write: phase Status fields (`planned`/`in-progress`/`completed`), Decision Log content for completed phases, original intent section preserved, DEC-COMPONENT-NNN ID format. Exit 2 = feedback loop with fix instructions |
+| **test-runner.sh** | Write\|Edit | **Async** — doesn't block Claude. Auto-detects test framework (pytest, vitest, jest, npm-test, cargo-test, go-test). 2s debounce lets rapid writes settle. 10s cooldown between runs. Lock file ensures single instance (kills previous run if superseded). Writes `.test-status` (`pass\|0\|timestamp` or `fail\|count\|timestamp`) consumed by test-gate.sh and guard.sh. Reports results via `systemMessage` |
 
-Check 8 (commit/merge) requires proof-of-work verification — the user must have seen the feature work before code is committed:
+### Session Lifecycle
 
-- **`.proof-status` missing** → DENY (feature not verified by user)
-- **`.proof-status` shows `pending`** → DENY (verification incomplete or invalidated by source change)
-- **`.proof-status` shows `verified`** → ALLOW
+| Hook | Event | What It Does |
+|------|-------|--------------|
+| **session-init.sh** | SessionStart | Injects git state, MASTER_PLAN.md status, active worktrees, todo HUD, unresolved agent findings, preserved context from pre-compaction. Clears stale `.test-status` from previous sessions (prevents old passes from satisfying the commit gate). Resets prompt count for first-prompt fallback. Known: SessionStart has a bug ([#10373](https://github.com/anthropics/claude-code/issues/10373)) where output may not inject for brand-new sessions — works for `/clear`, `/compact`, resume |
+| **prompt-submit.sh** | UserPromptSubmit | First-prompt mitigation for SessionStart bug: on the first prompt of any session, injects full session context (same as session-init.sh) as a reliability fallback. On subsequent prompts: keyword-based context injection — file references trigger @decision status, "plan"/"implement" trigger MASTER_PLAN phase status, "merge"/"commit" trigger git dirty state. Also: auto-claims issue refs ("fix #42"), detects deferred-work language ("later", "eventually") and suggests `/backlog`, flags large multi-step tasks for scope confirmation |
+| **compact-preserve.sh** | PreCompact | Dual output: (1) persistent `.preserved-context` file that survives compaction and is re-injected by session-init.sh, and (2) `additionalContext` including a compaction directive instructing the model to generate a structured context summary (objective, active files, constraints, continuity handoff). Captures git state, plan status, session changes, @decision annotations, test status, agent findings, and audit trail |
+| **session-end.sh** | SessionEnd | Kills lingering async test-runner processes, releases todo claims for this session, cleans session-scoped files (`.session-changes-*`, `.prompt-count-*`, `.lint-cache`, strike counters). Preserves cross-session state (`.audit-log`, `.agent-findings`, `.plan-drift`). Trims audit log to last 100 entries |
 
-**Staleness:** `track.sh` resets `.proof-status` to `pending` when non-test source files are modified after verification. This ensures the user always verifies the final state of the code.
+### Stop Hooks
 
-**Exemption:** Same `is_claude_meta_repo()` exemption — meta-infrastructure commits don't require feature verification.
+| Hook | Event | What It Does |
+|------|-------|--------------|
+| **surface.sh** | Stop | Full decision audit pipeline: (1) extract — scans project source directories for @decision annotations using ripgrep (with grep fallback); (2) validate — checks changed files over 50 lines for @decision presence and rationale; (3) reconcile — compares DEC-IDs in MASTER_PLAN.md vs code, identifies unplanned decisions (in code but not plan) and unimplemented decisions (in plan but not code), respects deprecated/superseded status; (4) persist — writes structured drift data to `.plan-drift` for consumption by plan-check.sh next session. Reports via `systemMessage` |
+| **session-summary.sh** | Stop | Deterministic (<2s runtime). Counts unique files changed (source vs config), @decision annotations added. Reports git branch, dirty/clean state, test status (waits briefly for in-flight async test-runner). Generates workflow-aware next-action guidance: on main → "create plan" or "create worktrees"; on feature branch → "fix tests", "run tests", "review changes", or "merge to main" based on current state. Includes pending todo count |
+| **forward-motion.sh** | Stop | Deterministic regex check (not AI). Extracts the last paragraph of the assistant's response and checks for forward motion indicators: `?`, "want me to", "shall I", "let me know", "would you like", "next step", etc. Returns exit 2 (feedback loop) only if the response ends with a bare completion statement ("done", "finished", "all set") and no question mark — prompting the model to add a suggestion or offer |
 
-**Artifact:** `.claude/.proof-status` — Format: `STATUS|TIMESTAMP` (e.g., `verified|1707500000`). Written by implementer agent after user confirms. Read by guard.sh, check-implementer.sh, Guardian agent.
+### Notifications
 
-### mock-gate.sh — Mock Detection Gate (Escalating)
+| Hook | Matcher | What It Does |
+|------|---------|--------------|
+| **notify.sh** | permission_prompt\|idle_prompt | Desktop notification when Claude needs attention (macOS only). Uses `terminal-notifier` (activates terminal on click) with `osascript` fallback. Sound varies by urgency: `Ping` for permission prompts, `Glass` for idle prompts |
 
-PreToolUse hook for Write|Edit. Detects internal mocking patterns in test files and enforces Sacred Practice #5.
+### Subagent Lifecycle
 
-| State | Behavior |
-|-------|----------|
-| Non-test file | ALLOW (always) |
-| `@mock-exempt` annotation | ALLOW (always) |
-| External-boundary mocks only | ALLOW (always) |
-| Internal mocks, strike 1 | ALLOW + advisory warning |
-| Internal mocks, strike 2+ | DENY |
+| Hook | Event / Matcher | What It Does |
+|------|-----------------|--------------|
+| **subagent-start.sh** | SubagentStart | Injects git state + plan status into every subagent. Agent-type-specific guidance: **Implementer** gets worktree creation warning (if none exist), test status, verification protocol instructions. **Guardian** gets plan update rules (only at phase boundaries) and test status. **Planner** gets research log status. Lightweight agents (Bash, Explore) get minimal context |
+| **check-planner.sh** | SubagentStop (planner\|Plan) | 5 checks: (1) MASTER_PLAN.md exists, (2) has `## Phase N` headers, (3) has intent/vision section, (4) has issues/tasks, (5) approval-loop detection (agent ended with question but no plan completion confirmation). Advisory only — always exit 0. Persists findings to `.agent-findings` for next-prompt injection |
+| **check-implementer.sh** | SubagentStop (implementer) | 5 checks: (1) current branch is not main/master (worktree was used), (2) @decision coverage on 50+ line source files changed this session, (3) approval-loop detection, (4) test status verification (recent failures = "implementation not complete"), (5) proof-of-work status (`verified`/`pending`/missing). Advisory only. Persists findings |
+| **check-guardian.sh** | SubagentStop (guardian) | 5 checks: (1) MASTER_PLAN.md freshness — only for phase-completing merges, must be updated within 300s, (2) git status is clean (no uncommitted changes), (3) branch info for context, (4) approval-loop detection, (5) test status for git operations (CRITICAL if tests failing when merge/commit detected). Advisory only. Persists findings |
 
-**Detection patterns:**
-- Python: `unittest.mock`, `MagicMock`, `@patch`, `mock.patch`, `mocker.patch`
-- JS/TS: `jest.mock(`, `vi.mock(`, `.mockImplementation`, `.mockReturnValue`, `sinon.stub/mock`
-- Go: `gomock`, `mockgen`
+---
 
-**External boundary exemptions:** `requests`, `httpx`, `redis`, `sqlalchemy`, `boto3`, `axios`, `node-fetch`, `pg`, `mongodb`, `aws-sdk`, `pytest-httpx`, `httpretty`, `responses`, `nock`, `msw`, `testcontainers`
+## Key guard.sh Behaviors
 
-**State file:** `.claude/.mock-gate-strikes` (format: `count|epoch`, cleaned by session-end.sh)
+The most complex hook — 8 checks covering 3 rewrites, 3 hard blocks, and 2 evidence gates.
 
-### auto-review.sh — Intelligent Command Auto-Approval
+**Transparent rewrites** (model's command silently replaced with safe alternative):
 
-PreToolUse hook for Bash. Runs alongside guard.sh. Philosophy: **"Approve unless proven dangerous"** — auto-approve safe commands, inject advisory context for risky ones, and let the normal permission system handle the prompt with full risk information.
+| Check | Trigger | Rewrite |
+|-------|---------|---------|
+| 1 | `/tmp/` or `/private/tmp/` write | → project `tmp/` directory (macOS symlink-aware; exempts Claude scratchpad) |
+| 3 | `git push --force` (not to main) | → `--force-with-lease` |
+| 5 | `git worktree remove` | → prepends `cd` to main worktree (prevents CWD death spiral) |
 
-**Three-Tier Classification:**
+**Hard blocks** (deny with explanation):
 
-| Tier | Behavior | Examples |
-|------|----------|---------|
-| 1 — Inherently Safe | Auto-approve regardless of arguments | `ls`, `cat`, `grep`, `cd`, `echo`, `sort`, `wc`, `date` |
-| 2 — Behavior-Dependent | Analyze subcommand + flags; approve if safe, advise if risky | `git status` ✓, `git merge` ✓ (Guardian gates); `git rebase` ⚠️ advisory |
-| 3 — Always Risky | Inject advisory context, defer to permission system | `rm`, `sudo`, `kill`, `ssh`, `eval`, `bash -c` |
+| Check | Trigger | Why |
+|-------|---------|-----|
+| 2 | `git commit` on main/master | Sacred Practice #2 (exempts `~/.claude` meta-repo and MASTER_PLAN.md-only commits) |
+| 3 | `git push --force` to main/master | Destructive to shared history |
+| 4 | `git reset --hard`, `git clean -f`, `git branch -D` | Destructive operations — suggests safe alternatives |
 
-**Advisory Pattern (risky commands):** When a command is classified as risky, auto-review injects the risk reason as `additionalContext` and exits 0 (no opinion). The normal permission system still handles the prompt, but Claude now has the risk context to explain *why* the user is being asked. This replaces the old silent-defer pattern where the user got a generic "allow this?" with no context.
+**Evidence gates** (require proof before commit/merge):
 
-**Compound Command Handling:** Commands joined with `&&`, `||`, `;`, or `|` are decomposed. Each segment is analyzed independently. ALL segments must be safe for auto-approval; ANY risky segment triggers advisory for the entire command.
+| Check | Requires | State File | Exemption |
+|-------|----------|------------|-----------|
+| 6-7 | `.test-status` = `pass` | `.claude/.test-status` (format: `result\|fail_count\|timestamp`) | `~/.claude` meta-repo (no test framework by design) |
+| 8 | `.proof-status` = `verified` | `.claude/.proof-status` (format: `status\|timestamp`) | `~/.claude` meta-repo |
 
-**Recursive $() Analysis:** Command substitutions (`$()` and backticks) are recursively analyzed up to depth 2. `cd $(git rev-parse --show-toplevel)` auto-approves because both `cd` (T1) and `git rev-parse` (T2→read-only) are safe.
+Test evidence: only `pass` satisfies the gate. Any non-pass status (`fail` of any age, unknown, missing file) = denied. Recent failures (< 10 min) get a specific error message with failure count; older failures get a generic "did not pass" message.
 
-**Dangerous Flag Detection:** Certain flags escalate risk regardless of tier: `--force`, `--hard`, `--no-verify`, `-f` (on git).
+Proof-of-work: the user must see the feature work before code is committed. `track.sh` resets proof status to `pending` when source files change after verification — ensuring the user always verifies the final state.
 
-**Interaction with guard.sh:** Guard runs first (sequential). If guard denies, auto-review never runs. If guard allows/passes through, auto-review classifies the command. If auto-review approves, the user skips the permission prompt. If auto-review advises, the risk reason is injected as context for the permission prompt.
+---
 
-**Interaction with Guardian agent:** Commands gated by other intelligent systems (Guardian for merges, guard.sh for dangerous git ops) are auto-approved by auto-review — the authority is delegated to the specialized gate. Auto-review advises on the uncertain middle ground that no other gate covers.
+## Key plan-check.sh Behaviors
 
-**Interaction with settings.json allowlist:** Behavior-dependent commands (git, curl, npm, docker, etc.) are NOT in the allowlist — auto-review.sh is the sole gatekeeper. Only Tier 1 commands (ls, cat, grep, etc.) remain in the allowlist as a fast-path optimization.
+Beyond checking for MASTER_PLAN.md existence, this hook scores plan staleness using two signals:
+
+| Signal | What It Measures | Warn Threshold | Deny Threshold |
+|--------|-----------------|----------------|----------------|
+| **Source churn %** | Percentage of tracked source files changed since plan update | 15% | 35% |
+| **Decision drift** | Count of unplanned + unimplemented @decision IDs (from `surface.sh` audit) | 2 IDs | 5 IDs |
+
+The composite score takes the worst tier across both signals. If either hits deny threshold, writes are blocked until the plan is updated. This is self-normalizing — a 3-file project and a 300-file project both trigger at the same percentage.
+
+**Bypasses:** Edit tool (inherently scoped), Write under 20 lines (trivial), non-source files, test files, non-git directories, `~/.claude` meta-infrastructure.
+
+---
+
+## Key auto-review.sh Behaviors
+
+An 840-line policy engine that replaces the blunt "allow or ask" permission model with intelligent classification:
+
+| Tier | Behavior | How It Decides |
+|------|----------|---------------|
+| **1 — Safe** | Auto-approve | Command is inherently read-only: `ls`, `cat`, `grep`, `cd`, `echo`, `sort`, `wc`, `date`, etc. |
+| **2 — Behavior-dependent** | Analyze subcommand + flags | `git status` ✅ auto-approve; `git rebase` ⚠️ advisory. Compound commands (`&&`, `\|\|`, `;`, `\|`) decomposed — every segment must be safe |
+| **3 — Always risky** | Advisory context → defer to user | `rm`, `sudo`, `kill`, `ssh`, `eval`, `bash -c` — risk reason injected so the permission prompt explains *why* |
+
+**Recursive analysis:** Command substitutions (`$()` and backticks) are analyzed to depth 2. `cd $(git rev-parse --show-toplevel)` auto-approves because both `cd` (Tier 1) and `git rev-parse` (Tier 2 → read-only) are safe.
+
+**Dangerous flag escalation:** `--force`, `--hard`, `--no-verify`, `-f` (on git) escalate any command to risky regardless of tier.
+
+**Interaction with guard.sh:** Guard runs first (sequential in settings.json). If guard denies, auto-review never executes. If guard allows/passes through, auto-review classifies. This means guard handles the hard security boundaries, auto-review handles the UX of permission prompts.
+
+---
+
+## Enforcement Patterns
+
+Three patterns recur across the hook system:
+
+**Escalating gates** — warn on first offense, block on repeat. Used when the model may have a legitimate reason to proceed once, but repeat violations indicate a broken workflow.
+
+| Hook | Strike File | Warn | Block |
+|------|------------|------|-------|
+| **test-gate.sh** | `.test-gate-strikes` | First source write with failing tests | Second source write without fixing tests |
+| **mock-gate.sh** | `.mock-gate-strikes` | First internal mock detected | Second internal mock (external boundary mocks always allowed) |
+
+**Feedback loops** — exit code 2 tells Claude Code to retry the operation with the hook's output as guidance, rather than failing outright. The model gets a chance to fix the issue automatically.
+
+| Hook | Triggers exit 2 when |
+|------|---------------------|
+| **lint.sh** | Linter finds fixable issues in the written file |
+| **plan-validate.sh** | MASTER_PLAN.md fails structural validation (missing Status fields, empty Decision Log, bad DEC-ID format) |
+| **forward-motion.sh** | Response ends with bare completion ("done") and no question, suggestion, or offer |
+
+**Transparent rewrites** — the model's command is silently replaced with a safe alternative. No denial, no feedback — the model doesn't even know the command was changed.
+
+| Hook | Rewrites |
+|------|----------|
+| **guard.sh** | `/tmp/` → project `tmp/`, `--force` → `--force-with-lease`, `worktree remove` → prepends safe `cd` |
+
+---
+
+## State Files
+
+Hooks communicate across events through state files in the project's `.claude/` directory. This is the backbone that connects async test execution to commit-time evidence gates, session tracking to end-of-session audits, and compaction preservation to next-session context injection.
+
+**Session-scoped** (cleaned up by session-end.sh):
+
+| File | Written By | Read By | Contents |
+|------|-----------|---------|----------|
+| `.session-changes-$ID` | track.sh | surface.sh, session-summary.sh, check-implementer.sh, compact-preserve.sh | One file path per line — every Write/Edit this session |
+| `.prompt-count-$ID` | prompt-submit.sh | prompt-submit.sh | Tracks whether first-prompt mitigation has fired |
+| `.test-gate-strikes` | test-gate.sh | test-gate.sh | Strike count for escalating enforcement |
+| `.mock-gate-strikes` | mock-gate.sh | mock-gate.sh | Strike count for escalating enforcement |
+| `.test-runner.lock` | test-runner.sh | test-runner.sh | PID of active test process (prevents concurrent runs) |
+| `.test-runner.last-run` | test-runner.sh | test-runner.sh | Epoch timestamp of last run (10s cooldown) |
+
+**Cross-session** (preserved by session-end.sh):
+
+| File | Written By | Read By | Contents |
+|------|-----------|---------|----------|
+| `.test-status` | test-runner.sh | guard.sh (evidence gate), test-gate.sh, session-summary.sh, check-implementer.sh, check-guardian.sh, subagent-start.sh | `result\|fail_count\|timestamp` — cleared at session start by session-init.sh to prevent stale passes from satisfying the commit gate |
+| `.proof-status` | user verification flow | guard.sh (evidence gate), track.sh (invalidation), check-implementer.sh | `status\|timestamp` — `verified` or `pending`. track.sh resets to `pending` when source files change after verification |
+| `.plan-drift` | surface.sh | plan-check.sh (staleness scoring) | Structured key=value: `unplanned_count`, `unimplemented_count`, `missing_decisions`, `total_decisions`, `source_files_changed` |
+| `.agent-findings` | check-planner.sh, check-implementer.sh, check-guardian.sh | session-init.sh, prompt-submit.sh, compact-preserve.sh | `agent_type\|issue1;issue2` — cleared after injection (one-shot delivery) |
+| `.preserved-context` | compact-preserve.sh | session-init.sh | Full session state snapshot — injected after compaction, then deleted (one-time use) |
+| `.audit-log` | surface.sh, test-runner.sh, check-*.sh | compact-preserve.sh, session-summary.sh | Timestamped event trail — trimmed to last 100 entries by session-end.sh |
 
 ---
 
