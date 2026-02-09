@@ -34,6 +34,25 @@ if [[ -n "$GIT_BRANCH" ]]; then
     fi
 fi
 
+# --- Harness update status ---
+UPDATE_STATUS_FILE="$HOME/.claude/.update-status"
+if [[ -f "$UPDATE_STATUS_FILE" && -s "$UPDATE_STATUS_FILE" ]]; then
+    IFS='|' read -r UPD_STATUS UPD_LOCAL_VER UPD_REMOTE_VER UPD_COUNT UPD_TS UPD_SUMMARY < "$UPDATE_STATUS_FILE"
+    case "$UPD_STATUS" in
+        updated)
+            CONTEXT_PARTS+=("Harness updated (v${UPD_LOCAL_VER} → v${UPD_REMOTE_VER}, ${UPD_COUNT} commits). To disable: \`touch ~/.claude/.disable-auto-update\`")
+            ;;
+        breaking)
+            CONTEXT_PARTS+=("Harness update available (v${UPD_LOCAL_VER} → v${UPD_REMOTE_VER}, BREAKING). Review CHANGELOG.md then \`cd ~/.claude && git pull --autostash --rebase\`. To disable: \`touch ~/.claude/.disable-auto-update\`")
+            ;;
+        conflict)
+            CONTEXT_PARTS+=("Harness auto-update failed (merge conflict with local changes). Run \`cd ~/.claude && git pull --autostash --rebase\` to resolve. To disable: \`touch ~/.claude/.disable-auto-update\`")
+            ;;
+    esac
+    # One-shot: remove after reading
+    rm -f "$UPDATE_STATUS_FILE"
+fi
+
 # --- MASTER_PLAN.md ---
 get_plan_status "$PROJECT_ROOT"
 write_statusline_cache "$PROJECT_ROOT"

@@ -53,6 +53,13 @@ plans/
 # Agent findings (one-shot inter-agent delivery, deleted after injection)
 .agent-findings
 
+# Auto-update state (session-scoped, consumed by session-init.sh)
+.update-status
+.update-check.lock
+
+# User preference: disable auto-updates (local toggle, not distributed)
+.disable-auto-update
+
 # Audit log (append-only session log, trimmed at session-end)
 .audit-log
 

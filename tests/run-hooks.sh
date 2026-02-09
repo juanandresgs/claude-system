@@ -358,6 +358,78 @@ fi
 rm -rf "$SA_TEST_DIR"
 echo ""
 
+# --- Test: update-check.sh ---
+echo "--- update-check.sh ---"
+
+# Syntax validation
+UPDATE_SCRIPT="$SCRIPT_DIR/../scripts/update-check.sh"
+if bash -n "$UPDATE_SCRIPT" 2>/dev/null; then
+    pass "update-check.sh — syntax valid"
+else
+    fail "update-check.sh" "syntax error"
+fi
+
+# VERSION file exists and contains valid semver
+VERSION_FILE="$SCRIPT_DIR/../VERSION"
+if [[ -f "$VERSION_FILE" ]]; then
+    VERSION_CONTENT=$(head -1 "$VERSION_FILE" | tr -d '[:space:]')
+    if [[ "$VERSION_CONTENT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        pass "VERSION — valid semver ($VERSION_CONTENT)"
+    else
+        fail "VERSION" "invalid semver: '$VERSION_CONTENT'"
+    fi
+else
+    fail "VERSION" "file not found"
+fi
+
+# Graceful degradation: run in a non-git temp dir (no remote, no crash)
+UPD_TEST_DIR=$(mktemp -d)
+(
+    export HOME="$UPD_TEST_DIR"
+    mkdir -p "$UPD_TEST_DIR/.claude"
+    cp "$VERSION_FILE" "$UPD_TEST_DIR/.claude/VERSION"
+    cp "$UPDATE_SCRIPT" "$UPD_TEST_DIR/.claude/update-check.sh"
+    # Run in a context with no git repo — should exit 0 silently
+    output=$(bash "$UPD_TEST_DIR/.claude/update-check.sh" 2>/dev/null) || true
+    if [[ -z "$output" ]]; then
+        echo "GRACEFUL_OK"
+    else
+        echo "GRACEFUL_FAIL:$output"
+    fi
+) | while IFS= read -r line; do
+    if [[ "$line" == "GRACEFUL_OK" ]]; then
+        pass "update-check.sh — graceful exit with no git repo"
+    elif [[ "$line" == GRACEFUL_FAIL* ]]; then
+        fail "update-check.sh — graceful exit" "unexpected output: ${line#GRACEFUL_FAIL:}"
+    fi
+done
+rm -rf "$UPD_TEST_DIR"
+
+# Disable toggle test: create flag file, script should exit immediately
+UPD_TEST_DIR2=$(mktemp -d)
+(
+    export HOME="$UPD_TEST_DIR2"
+    mkdir -p "$UPD_TEST_DIR2/.claude"
+    touch "$UPD_TEST_DIR2/.claude/.disable-auto-update"
+    cp "$VERSION_FILE" "$UPD_TEST_DIR2/.claude/VERSION"
+    cp "$UPDATE_SCRIPT" "$UPD_TEST_DIR2/.claude/update-check.sh"
+    output=$(bash "$UPD_TEST_DIR2/.claude/update-check.sh" 2>/dev/null) || true
+    # Should not create any status file
+    if [[ ! -f "$UPD_TEST_DIR2/.claude/.update-status" && -z "$output" ]]; then
+        echo "DISABLE_OK"
+    else
+        echo "DISABLE_FAIL"
+    fi
+) | while IFS= read -r line; do
+    if [[ "$line" == "DISABLE_OK" ]]; then
+        pass "update-check.sh — disable toggle skips update"
+    else
+        fail "update-check.sh — disable toggle" "should skip when .disable-auto-update exists"
+    fi
+done
+rm -rf "$UPD_TEST_DIR2"
+echo ""
+
 # --- Summary ---
 echo "==========================="
 total=$((passed + failed + skipped))

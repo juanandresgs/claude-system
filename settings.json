@@ -67,6 +67,16 @@
   "hooks": {
     "SessionStart": [
       {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/scripts/update-check.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
         "matcher": "startup|resume|clear|compact",
         "hooks": [
           {

@@ -110,6 +110,15 @@ On your first `claude` session, you should see the SessionStart hook inject git 
 
 **Optional:** `/backlog` command uses GitHub Issues via `gh` CLI (`gh auth login`). Research skills (`deep-research`) accept OpenAI/Perplexity/Gemini API keys but degrade gracefully without them. Desktop notifications need `terminal-notifier` (macOS: `brew install terminal-notifier`).
 
+### Staying Updated
+
+The harness auto-checks for updates on every new session start. Same-MAJOR-version updates are applied automatically. Breaking changes (different MAJOR version) show a notification — you decide when to apply.
+
+- **Auto-updates enabled by default.** Create `~/.claude/.disable-auto-update` to disable.
+- **Manual update:** `cd ~/.claude && git pull --autostash --rebase`
+- **Fork users:** Your `origin` points to your fork, so you get your own updates. Add an `upstream` remote to also track the original repo.
+- **Local customizations safe:** `settings.local.json` and `CLAUDE.local.md` are gitignored. If you edit tracked files, `--autostash` preserves your changes. If a conflict occurs, the update aborts cleanly and you're notified.
+
 ---
 
 ## How It Works
@@ -204,7 +213,8 @@ For the full protocol, detailed tables, enforcement patterns, state files, and s
 | **lint.sh** | PostToolUse:Write\|Edit | Auto-detect linter, run on modified files, feedback loop |
 | **track.sh** | PostToolUse:Write\|Edit | Record changes, invalidate proof-of-work on source edits |
 | **test-runner.sh** | PostToolUse:Write\|Edit | Async test execution, writes `.test-status` for evidence gate |
-| **session-init.sh** | SessionStart | Inject git state, plan status, worktrees, todo HUD |
+| **update-check.sh** | SessionStart (startup) | Auto-update harness from origin; notify for breaking changes |
+| **session-init.sh** | SessionStart | Inject git state, update status, plan status, worktrees, todo HUD |
 | **prompt-submit.sh** | UserPromptSubmit | Keyword-based context injection, deferred-work detection |
 | **compact-preserve.sh** | PreCompact | Dual-path context preservation across compaction |
 | **surface.sh** | Stop | Decision audit: extract, validate, reconcile @decision coverage |
