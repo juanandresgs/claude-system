@@ -134,6 +134,7 @@ UserPromptSubmit → prompt-submit.sh (keyword-based context injection)
                     ↓
 PreToolUse:Bash → guard.sh (sacred practice guardrails + rewrites)
                    auto-review.sh (intelligent command auto-approval)
+                   llm-review.sh (external LLM semantic review — Gemini + OpenAI)
 PreToolUse:W/E  → test-gate.sh → mock-gate.sh → branch-guard.sh → doc-gate.sh → plan-check.sh
                     ↓
 [Tool executes]
@@ -160,8 +161,9 @@ Hooks within the same event run **sequentially** in array order from settings.js
 
 | Hook | Matcher | What It Does |
 |------|---------|--------------|
-| **guard.sh** | Bash | 10 checks: nuclear deny (7 catastrophic command categories), cross-project git guard; rewrites `/tmp/` paths, `--force` → `--force-with-lease`, worktree CWD safety; blocks commits on main, force push to main, destructive git (`reset --hard`, `clean -f`, `branch -D`); requires test evidence + proof-of-work verification for commits and merges |
-| **auto-review.sh** | Bash | Three-tier command classifier: auto-approves safe commands, defers risky ones to user |
+| **guard.sh** | Bash | 9 checks: nuclear deny (7 catastrophic command categories), early-exit gate (non-git commands skip git-specific checks); rewrites `/tmp/` paths, `--force` → `--force-with-lease`, worktree CWD safety; blocks commits on main, force push to main, destructive git (`reset --hard`, `clean -f`, `branch -D`); requires test evidence + proof-of-work verification for commits and merges. All git subcommand patterns use flag-tolerant matching (`git\s+[^|;&]*\bSUBCMD`) to catch `git -C /path` and other global flags. Trailing boundaries use `[^a-zA-Z0-9-]` to reject hyphenated subcommands (`commit-msg`, `merge-base`, `merge-file`) |
+| **auto-review.sh** | Bash | Three-tier command classifier: auto-approves safe commands, defers risky ones to user. `git commit/push/merge` classified as risky (requires Guardian dispatch per Sacred Practice #8) |
+| **llm-review.sh** | Bash | External LLM semantic reviewer: calls Gemini/OpenAI to analyze commands auto-review couldn't classify. Safe = auto-approve, unsafe = deny (requires dual-provider consensus), misaligned = advisory nudge |
 | **test-gate.sh** | Write\|Edit | Escalating gate: warns on first source write with failing tests, blocks on repeat |
 | **mock-gate.sh** | Write\|Edit | Detects internal mocking patterns; warns first, blocks on repeat |
 | **branch-guard.sh** | Write\|Edit | Blocks source file writes on main/master branch |
@@ -215,7 +217,7 @@ Hooks within the same event run **sequentially** in array order from settings.js
 
 ## Key guard.sh Behaviors
 
-The most complex hook — 10 checks covering 7 nuclear denies, 1 cross-project guard, 3 rewrites, 3 hard blocks, and 2 evidence gates.
+The most complex hook — 9 checks covering 7 nuclear denies, 1 early-exit gate, 3 rewrites, 3 hard blocks, and 2 evidence gates.
 
 **Nuclear deny** (Check 0 — unconditional, fires first):
 
@@ -231,13 +233,9 @@ The most complex hook — 10 checks covering 7 nuclear denies, 1 cross-project g
 
 False positive safety: `rm -rf ./node_modules` (scoped path), `curl ... | jq` (jq is not a shell), `chmod 755 ./build` (not 777 on root) all pass through.
 
-**Cross-project guard** (Check 1.5 — fires when git targets a different repo):
+**Early-exit gate** (after Check 1 — non-git commands skip all git-specific checks):
 
-| Check | Trigger | Why |
-|-------|---------|-----|
-| 1.5 | `git -C /other-repo` or `cd /other-repo && git ...` targeting a different repository | Prevents accidental operations on unrelated projects |
-
-Uses `is_same_project()` helper which compares `git rev-parse --git-common-dir` (read-only) for both repos. Worktrees of the same repository share the same common dir and are correctly allowed.
+Strips quoted strings from the command, then checks if `git` appears in a command position (start of line, or after `&&`, `||`, `|`, `;`). If no git command is found, exits immediately — skipping checks 2–8. This prevents false positives where git subcommand keywords appear inside quoted arguments (e.g., `todo.sh add "fix git committing"` or `echo "git merge strategy"`).
 
 **Transparent rewrites** (model's command silently replaced with safe alternative):
 
@@ -299,6 +297,39 @@ An 840-line policy engine that replaces the blunt "allow or ask" permission mode
 
 **Interaction with guard.sh:** Guard runs first (sequential in settings.json). If guard denies, auto-review never executes. If guard allows/passes through, auto-review classifies. This means guard handles the hard security boundaries, auto-review handles the UX of permission prompts.
 
+**Git commit/push/merge reclassification:** These are classified as risky (return 1) rather than safe. This ensures every `git commit`, `git push`, and `git merge` triggers a user permission prompt, enforcing Guardian agent dispatch (Sacred Practice #8). Trade-off: Guardian's own git calls also trigger the prompt, meaning the user approves twice (Guardian plan + actual command). Acceptable — one extra click for mechanical enforcement.
+
+---
+
+## Key llm-review.sh Behaviors
+
+Third layer in the PreToolUse:Bash chain. Only fires for commands that auto-review.sh couldn't classify (emitted `additionalContext` advisory instead of `permissionDecision: allow`).
+
+**Three-layer chain:** `guard.sh → auto-review.sh → llm-review.sh`
+
+| Verdict | Action | Example |
+|---------|--------|---------|
+| Safe + aligned | Auto-approve silently | `mkdir -p tmp && todo.sh list > tmp/out.json` |
+| Unsafe | Deny with dual-provider reasoning | `python -c "import os; os.system('rm -rf /')"` |
+| Safe but misaligned | Advisory nudge (no blocking) | `npm publish` during a testing phase |
+
+**Dual-provider consensus for deny:** A single model cannot deny. Unsafe verdict from primary reviewer (Gemini) auto-escalates to OpenAI for second opinion. Both must agree for deny. Disagreement = advisory with both perspectives.
+
+**Providers:**
+
+| Provider | Role | Timeout | Model |
+|----------|------|---------|-------|
+| Gemini Flash | Primary reviewer (fast pass) | 3s | `$LLM_REVIEW_GEMINI_MODEL` (default: `gemini-2.0-flash`) |
+| OpenAI Mini | Second opinion (unsafe escalation only) | 5s | `$LLM_REVIEW_OPENAI_MODEL` (default: `gpt-4o-mini`) |
+
+**Fallback cascade:** Both keys → full two-provider flow. One key → single reviewer, unsafe = advisory only (can't deny alone). No keys → silent exit. Provider failure → try other provider or downgrade to advisory. Both fail → silent exit.
+
+**Caching:** SHA-256 of command string → `$PROJECT_ROOT/.claude/.llm-review-cache`. Session-scoped (cleared by session-init.sh). Format: `hash|verdict|reason|epoch`.
+
+**Configuration:** `LLM_REVIEW_ENABLED=0` disables entirely. API keys loaded from env vars or `~/.claude/.env`.
+
+**No-recursion guarantee:** Hook scripts run as bash subprocesses. The `curl` calls are HTTP requests that do not flow through the PreToolUse hook chain.
+
 ---
 
 ## Enforcement Patterns
@@ -342,6 +373,7 @@ Hooks communicate across events through state files in the project's `.claude/` 
 | `.mock-gate-strikes` | mock-gate.sh | mock-gate.sh | Strike count for escalating enforcement |
 | `.test-runner.lock` | test-runner.sh | test-runner.sh | PID of active test process (prevents concurrent runs) |
 | `.test-runner.last-run` | test-runner.sh | test-runner.sh | Epoch timestamp of last run (10s cooldown) |
+| `.llm-review-cache` | llm-review.sh | llm-review.sh | `hash\|verdict\|reason\|epoch` — SHA-256 keyed cache of LLM verdicts, cleared on session start |
 | `.update-status` | update-check.sh | session-init.sh | `status\|local_ver\|remote_ver\|count\|timestamp\|summary` — one-shot, deleted after injection |
 | `.update-check.lock` | update-check.sh | update-check.sh | PID of running update check (prevents concurrent runs) |
 

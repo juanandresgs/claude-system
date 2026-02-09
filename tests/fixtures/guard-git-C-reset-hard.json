@@ -1,0 +1,6 @@
+{
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "git -C /tmp/repo reset --hard HEAD~1"
+  }
+}

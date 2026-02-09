@@ -121,6 +121,14 @@ if echo "$COMMAND" | grep -qE "$TMP_PATTERN"; then
     fi
 fi
 
+# --- Early-exit gate: skip git-specific checks for non-git commands ---
+# Strip quoted strings so text like "fix git committing" doesn't trigger.
+# Then check if `git` appears in a command position (start, or after && || | ;).
+_stripped_cmd=$(echo "$COMMAND" | sed -E "s/\"[^\"]*\"//g; s/'[^']*'//g")
+if ! echo "$_stripped_cmd" | grep -qE '(^|&&|\|\|?|;)\s*git\s'; then
+    exit 0
+fi
+
 # --- Helper: extract git target directory from command text ---
 # Parses "cd /path && git ..." or "git -C /path ..." to find the actual
 # working directory the git command targets. Falls back to CWD.
@@ -178,23 +186,11 @@ is_same_project() {
     [[ "$current_common" == "$target_common" ]]
 }
 
-# --- Check 1.5: Cross-project git guard ---
-# Denies git commands that explicitly target a different repository via -C or cd.
-# Worktrees of the same repo are allowed (is_same_project handles this).
-if echo "$COMMAND" | grep -qE '(git\s+-C\s|cd\s+.*&&\s*git\s)'; then
-    CROSS_TARGET=$(extract_git_target_dir "$COMMAND")
-    if [[ -n "$CROSS_TARGET" && -d "$CROSS_TARGET" ]]; then
-        if ! is_same_project "$CROSS_TARGET"; then
-            deny "Cross-project git command blocked. Targets '$CROSS_TARGET' which is outside the current project. Operations on other repositories require explicit user action."
-        fi
-    fi
-fi
-
 # --- Check 2: Main is sacred (no commits on main/master) ---
 # Exceptions:
 #   - ~/.claude directory (meta-infrastructure)
 #   - MASTER_PLAN.md only commits (planning documents per Core Dogma)
-if echo "$COMMAND" | grep -qE 'git\s+commit'; then
+if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bcommit([^a-zA-Z0-9-]|$)'; then
     TARGET_DIR=$(extract_git_target_dir "$COMMAND")
     REPO_ROOT=$(git -C "$TARGET_DIR" rev-parse --show-toplevel 2>/dev/null || echo "")
     # Skip if this is the .claude config directory (meta-infrastructure)
@@ -213,7 +209,7 @@ if echo "$COMMAND" | grep -qE 'git\s+commit'; then
 fi
 
 # --- Check 3: Force push handling ---
-if echo "$COMMAND" | grep -qE 'git\s+push\s+.*(-f|--force)\b'; then
+if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bpush\s+.*(-f|--force)\b'; then
     # Hard block: force push to main/master
     if echo "$COMMAND" | grep -qE '(origin|upstream)\s+(main|master)\b'; then
         deny "Cannot force push to main/master. This is a destructive action that rewrites shared history."
@@ -227,20 +223,20 @@ if echo "$COMMAND" | grep -qE 'git\s+push\s+.*(-f|--force)\b'; then
 fi
 
 # --- Check 4: No destructive git commands (hard blocks) ---
-if echo "$COMMAND" | grep -qE 'git\s+reset\s+--hard'; then
+if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\breset\s+--hard'; then
     deny "git reset --hard is destructive and discards uncommitted work. Use git stash or create a backup branch first."
 fi
 
-if echo "$COMMAND" | grep -qE 'git\s+clean\s+.*-f'; then
+if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bclean\s+.*-f'; then
     deny "git clean -f permanently deletes untracked files. Use git clean -n (dry run) first to see what would be deleted."
 fi
 
-if echo "$COMMAND" | grep -qE 'git\s+branch\s+.*-D\b'; then
+if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bbranch\s+.*-D\b'; then
     deny "git branch -D force-deletes a branch even if unmerged. Use git branch -d (lowercase) for safe deletion."
 fi
 
 # --- Check 5: Worktree removal CWD safety rewrite ---
-if echo "$COMMAND" | grep -qE 'git[[:space:]]+worktree[[:space:]]+remove'; then
+if echo "$COMMAND" | grep -qE 'git[[:space:]]+[^|;&]*worktree[[:space:]]+remove'; then
     WT_PATH=$(echo "$COMMAND" | sed -E 's/.*git[[:space:]]+worktree[[:space:]]+remove[[:space:]]+(-f[[:space:]]+)?//' | xargs)
     if [[ -n "$WT_PATH" ]]; then
         # Find main worktree (safe target for cd)
@@ -268,9 +264,9 @@ is_claude_meta_repo() {
 }
 
 # --- Check 6: Test status gate for merge commands ---
-if echo "$COMMAND" | grep -qE 'git\s+merge'; then
+if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bmerge([^a-zA-Z0-9-]|$)'; then
     PROJECT_ROOT=$(detect_project_root)
-    if ! is_claude_meta_repo "$PROJECT_ROOT"; then
+    if git -C "$PROJECT_ROOT" rev-parse --git-dir > /dev/null 2>&1 && ! is_claude_meta_repo "$PROJECT_ROOT"; then
         TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
         if [[ -f "$TEST_STATUS_FILE" ]]; then
             TEST_RESULT=$(cut -d'|' -f1 "$TEST_STATUS_FILE")
@@ -291,9 +287,9 @@ if echo "$COMMAND" | grep -qE 'git\s+merge'; then
 fi
 
 # --- Check 7: Test status gate for commit commands ---
-if echo "$COMMAND" | grep -qE 'git\s+commit'; then
+if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bcommit([^a-zA-Z0-9-]|$)'; then
     PROJECT_ROOT=$(extract_git_target_dir "$COMMAND")
-    if ! is_claude_meta_repo "$PROJECT_ROOT"; then
+    if git -C "$PROJECT_ROOT" rev-parse --git-dir > /dev/null 2>&1 && ! is_claude_meta_repo "$PROJECT_ROOT"; then
         TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
         if [[ -f "$TEST_STATUS_FILE" ]]; then
             TEST_RESULT=$(cut -d'|' -f1 "$TEST_STATUS_FILE")
@@ -316,13 +312,13 @@ fi
 # --- Check 8: Proof-of-work verification gate ---
 # Requires .proof-status = "verified" before commit/merge.
 # Same meta-repo exemption as test gates (no feature verification needed for config).
-if echo "$COMMAND" | grep -qE 'git\s+(commit|merge)'; then
-    if echo "$COMMAND" | grep -qE 'git\s+commit'; then
+if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\b(commit|merge)([^a-zA-Z0-9-]|$)'; then
+    if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bcommit([^a-zA-Z0-9-]|$)'; then
         PROOF_DIR=$(extract_git_target_dir "$COMMAND")
     else
         PROOF_DIR=$(detect_project_root)
     fi
-    if ! is_claude_meta_repo "$PROOF_DIR"; then
+    if git -C "$PROOF_DIR" rev-parse --git-dir > /dev/null 2>&1 && ! is_claude_meta_repo "$PROOF_DIR"; then
         PROOF_FILE="${PROOF_DIR}/.claude/.proof-status"
         if [[ -f "$PROOF_FILE" ]]; then
             PROOF_STATUS=$(cut -d'|' -f1 "$PROOF_FILE")

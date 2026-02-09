@@ -363,7 +363,7 @@ classify_command() {
         sudo|su|doas)   echo 3 ;;
         eval|exec)      echo 3 ;;
         source|\.)      echo 3 ;;
-        bash|sh|zsh|dash|fish) echo 3 ;; # meta-execution shells
+        bash|sh|zsh|dash|fish) echo 2 ;; # meta-execution shells — Tier 2 with argument analysis
         dd|mkfs|mount|umount) echo 3 ;;
         systemctl|launchctl|crontab) echo 3 ;;
         ssh|scp|rsync)  echo 3 ;;
@@ -409,6 +409,7 @@ analyze_tier2() {
         jq|yq)      return 0 ;; # JSON/YAML processor — safe
         gh)         analyze_gh "$args" ;;
         pytest|jest|vitest|mocha) return 0 ;; # Test runners — safe
+        bash|sh|zsh|dash|fish) analyze_shell "$args" "$depth" ;;
         *)          return 1 ;; # Unknown tier 2 — defer
     esac
 }
@@ -500,9 +501,9 @@ analyze_git() {
             return 0 ;;
 
         # Write operations
-        commit)  return 0 ;;   # guard.sh enforces main-branch/test/proof gates; Guardian provides formal approval
-        push)    return 0 ;;   # guard.sh enforces force-push protection; Guardian provides formal approval
-        merge)   return 0 ;;   # Guardian agent handles merges formally; conflicts are recoverable
+        commit)  set_risk "git commit — requires Guardian agent dispatch (Sacred Practice #8)"; return 1 ;;
+        push)    set_risk "git push — requires Guardian agent dispatch (Sacred Practice #8)"; return 1 ;;
+        merge)   set_risk "git merge — requires Guardian agent dispatch (Sacred Practice #8)"; return 1 ;;
         rebase)  set_risk "git rebase — rewrites commit history"; return 1 ;;
         reset)   set_risk "git reset — moves HEAD and may discard changes"; return 1 ;;
         clean)   set_risk "git clean — permanently deletes untracked files"; return 1 ;;
@@ -825,6 +826,44 @@ analyze_gh() {
             set_risk "gh $subcmd — unknown subcommand, cannot assess safety"
             return 1
             ;;
+    esac
+}
+
+# ── Shell analyzer ──
+# bash/sh/zsh with script files = safe; bash -c "code" = risky
+analyze_shell() {
+    local args="$1"
+    local depth="$2"
+
+    # No arguments = interactive shell — risky
+    [[ -z "$args" ]] && {
+        set_risk "interactive shell session — cannot assess safety"
+        return 1
+    }
+
+    # Extract first argument (flag or script path)
+    local first_arg
+    first_arg=$(echo "$args" | awk '{print $1}')
+
+    case "$first_arg" in
+        # Safe flags: syntax check, debug trace
+        -n|-x|--norc|--noprofile|--version|--help)
+            return 0 ;;
+        # Dangerous: inline code execution
+        -c)
+            set_risk "bash -c executes inline code — cannot statically verify"
+            return 1 ;;
+        # Interactive flags
+        -i|-l|--login)
+            set_risk "interactive/login shell — cannot assess safety"
+            return 1 ;;
+        # Script path: safe if it's a file path (not a flag)
+        -*)
+            set_risk "bash with unknown flag '$first_arg' — cannot assess safety"
+            return 1 ;;
+        *)
+            # Running a script file — safe (same as python/node)
+            return 0 ;;
     esac
 }
 

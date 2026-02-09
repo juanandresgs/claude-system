@@ -1,0 +1,6 @@
+{
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "git -C /tmp/repo commit -m \"bypass test\""
+  }
+}

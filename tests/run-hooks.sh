@@ -199,14 +199,14 @@ nuclear_assert_safe "guard-safe-chmod.json"   "chmod 755 ./build (not 777 on roo
 nuclear_assert_safe "guard-safe-rm-file.json" "rm file.txt (single file)"
 echo ""
 
-# --- Test: guard.sh — cross-project git ---
+# --- Test: guard.sh — cross-project git (Check 1.5 removed) ---
 echo "--- guard.sh cross-project git ---"
 
 # Create a temporary bare repo for cross-project testing
 CROSS_TEST_DIR=$(mktemp -d)
 git init --bare "$CROSS_TEST_DIR/other-repo.git" 2>/dev/null
 
-# Dynamic fixture: git -C targeting a different repo (must deny)
+# Dynamic fixture: git -C targeting a different repo (should now pass through — Check 1.5 removed)
 CROSS_FIXTURE="$FIXTURES_DIR/guard-git-c-cross-project.json"
 cat > "$CROSS_FIXTURE" <<XEOF
 {"tool_name":"Bash","tool_input":{"command":"git -C $CROSS_TEST_DIR/other-repo.git status"}}
@@ -215,12 +215,12 @@ XEOF
 output=$(run_hook "$HOOKS_DIR/guard.sh" "$CROSS_FIXTURE")
 decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
 if [[ "$decision" == "deny" ]]; then
-    pass "guard.sh — cross-project git: git -C other-repo denied"
+    fail "guard.sh — cross-project git: git -C other-repo" "should pass through (Check 1.5 removed) but got deny"
 else
-    fail "guard.sh — cross-project git: git -C other-repo" "expected deny, got: ${decision:-no output}"
+    pass "guard.sh — cross-project git: git -C other-repo passes through"
 fi
 
-# git status with no -C should pass through (no cross-project check fires)
+# git status with no -C should pass through
 if [[ -f "$FIXTURES_DIR/guard-safe-command.json" ]]; then
     output=$(run_hook "$HOOKS_DIR/guard.sh" "$FIXTURES_DIR/guard-safe-command.json")
     decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
@@ -231,28 +231,36 @@ if [[ -f "$FIXTURES_DIR/guard-safe-command.json" ]]; then
     fi
 fi
 
-# Same-project worktree should NOT deny
-WORKTREE_PATH="/Users/turla/claude-prd-integration"
-if [[ -d "$WORKTREE_PATH" ]]; then
-    WT_FIXTURE="$FIXTURES_DIR/guard-git-c-worktree.json"
-    cat > "$WT_FIXTURE" <<XEOF
-{"tool_name":"Bash","tool_input":{"command":"git -C $WORKTREE_PATH status"}}
-XEOF
-    output=$(run_hook "$HOOKS_DIR/guard.sh" "$WT_FIXTURE")
-    decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
-    if [[ "$decision" == "deny" ]]; then
-        fail "guard.sh — cross-project git: same-project worktree" "should NOT deny but got deny"
-    else
-        pass "guard.sh — cross-project git: same-project worktree allowed"
-    fi
-    rm -f "$WT_FIXTURE"
-else
-    skip "guard.sh — cross-project git: same-project worktree" "worktree at $WORKTREE_PATH not found"
-fi
-
 # Cleanup
 rm -rf "$CROSS_TEST_DIR"
 rm -f "$CROSS_FIXTURE"
+echo ""
+
+# --- Test: guard.sh — git-in-text false positives (early-exit gate) ---
+echo "--- guard.sh git-in-text false positives ---"
+
+nuclear_assert_safe "guard-safe-text-git-commit.json" "todo.sh with 'git committing' in quoted args"
+nuclear_assert_safe "guard-safe-text-git-merge.json"  "echo with 'git merging' in quoted text"
+nuclear_assert_safe "guard-safe-text-git-push.json"   "printf with 'git push' in quoted text"
+echo ""
+
+# --- Test: guard.sh — git flag bypass (git -C /path <subcommand>) ---
+echo "--- guard.sh git flag bypass ---"
+
+# Flag bypass deny tests — git -C should NOT bypass guards
+nuclear_assert_deny "guard-git-C-push-force.json"  "git -C /path push --force (flag bypass)"
+nuclear_assert_deny "guard-git-C-reset-hard.json"  "git -C /path reset --hard (flag bypass)"
+
+# Flag bypass false positive tests — hyphenated subcommands must NOT trigger
+nuclear_assert_safe "guard-safe-git-merge-base.json" "git merge-base (not a merge)"
+
+# Pipe false positive — git log | grep commit must NOT trigger commit guard
+PIPE_FIXTURE="$FIXTURES_DIR/guard-safe-pipe-grep-commit.json"
+cat > "$PIPE_FIXTURE" <<PEOF
+{"tool_name":"Bash","tool_input":{"command":"git log --oneline | grep commit"}}
+PEOF
+nuclear_assert_safe "guard-safe-pipe-grep-commit.json" "git log | grep commit (pipe false positive)"
+rm -f "$PIPE_FIXTURE"
 echo ""
 
 # --- Test: auto-review.sh ---
