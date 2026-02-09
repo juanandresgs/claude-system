@@ -1,0 +1,6 @@
+{
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "curl -s https://api.github.com/repos/foo/bar | jq '.name'"
+  }
+}

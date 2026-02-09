@@ -100,6 +100,8 @@ Source with: `source "$(dirname "$0")/log.sh"`
 | `read_input` | Read and cache stdin JSON into `$HOOK_INPUT` (call once) |
 | `get_field <jq_path>` | Extract field from cached input (e.g., `get_field '.tool_input.command'`) |
 | `detect_project_root` | Returns `$CLAUDE_PROJECT_DIR` → git root → `$HOME` (fallback chain) |
+| `is_same_project(dir)` | Compares `git rev-parse --git-common-dir` for current project vs target dir. Returns 0 if same repo (handles worktrees). Defined in `guard.sh` |
+| `extract_git_target_dir(cmd)` | Parses `cd /path && git ...` or `git -C /path ...` to find git target directory. Falls back to CWD. Defined in `guard.sh` |
 | `log_info <stage> <msg>` | Human-readable stderr log |
 | `log_json <stage> <msg>` | Structured JSON stderr log |
 
@@ -157,7 +159,7 @@ Hooks within the same event run **sequentially** in array order from settings.js
 
 | Hook | Matcher | What It Does |
 |------|---------|--------------|
-| **guard.sh** | Bash | 8 checks: rewrites `/tmp/` paths, `--force` → `--force-with-lease`, worktree CWD safety; blocks commits on main, force push to main, destructive git (`reset --hard`, `clean -f`, `branch -D`); requires test evidence + proof-of-work verification for commits and merges |
+| **guard.sh** | Bash | 10 checks: nuclear deny (7 catastrophic command categories), cross-project git guard; rewrites `/tmp/` paths, `--force` → `--force-with-lease`, worktree CWD safety; blocks commits on main, force push to main, destructive git (`reset --hard`, `clean -f`, `branch -D`); requires test evidence + proof-of-work verification for commits and merges |
 | **auto-review.sh** | Bash | Three-tier command classifier: auto-approves safe commands, defers risky ones to user |
 | **test-gate.sh** | Write\|Edit | Escalating gate: warns on first source write with failing tests, blocks on repeat |
 | **mock-gate.sh** | Write\|Edit | Detects internal mocking patterns; warns first, blocks on repeat |
@@ -211,7 +213,29 @@ Hooks within the same event run **sequentially** in array order from settings.js
 
 ## Key guard.sh Behaviors
 
-The most complex hook — 8 checks covering 3 rewrites, 3 hard blocks, and 2 evidence gates.
+The most complex hook — 10 checks covering 7 nuclear denies, 1 cross-project guard, 3 rewrites, 3 hard blocks, and 2 evidence gates.
+
+**Nuclear deny** (Check 0 — unconditional, fires first):
+
+| Category | Pattern | Why |
+|----------|---------|-----|
+| Filesystem destruction | `rm -rf /`, `rm -rf ~`, `rm -rf /Users`, `rm -rf /*` | Recursive deletion of system/user root directories |
+| Disk/device destruction | `dd ... of=/dev/`, `mkfs`, `> /dev/sd*` | Overwrites or formats storage devices |
+| Fork bomb | `:(){ :\|:& };:` | Infinite process spawning exhausts system resources |
+| Permission destruction | `chmod 777 /`, `chmod -R 777 /*` | Removes all permission boundaries on root |
+| System halt | `shutdown`, `reboot`, `halt`, `poweroff`, `init 0/6` | Stops or restarts the machine |
+| Remote code execution | `curl/wget ... \| bash/sh/python/perl/ruby/node` | Executes untrusted downloaded code |
+| SQL destruction | `DROP DATABASE/TABLE/SCHEMA`, `TRUNCATE TABLE` | Permanently destroys database objects |
+
+False positive safety: `rm -rf ./node_modules` (scoped path), `curl ... | jq` (jq is not a shell), `chmod 755 ./build` (not 777 on root) all pass through.
+
+**Cross-project guard** (Check 1.5 — fires when git targets a different repo):
+
+| Check | Trigger | Why |
+|-------|---------|-----|
+| 1.5 | `git -C /other-repo` or `cd /other-repo && git ...` targeting a different repository | Prevents accidental operations on unrelated projects |
+
+Uses `is_same_project()` helper which compares `git rev-parse --git-common-dir` (read-only) for both repos. Worktrees of the same repository share the same common dir and are correctly allowed.
 
 **Transparent rewrites** (model's command silently replaced with safe alternative):
 

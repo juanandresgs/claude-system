@@ -145,6 +145,114 @@ if [[ -f "$FIXTURES_DIR/guard-force-push.json" ]]; then
     fi
 fi
 
+# --- Test: guard.sh — nuclear command deny ---
+echo "--- guard.sh nuclear commands ---"
+
+# Nuclear deny tests — each must produce permissionDecision: deny
+nuclear_assert_deny() {
+    local fixture="$1" label="$2"
+    if [[ -f "$FIXTURES_DIR/$fixture" ]]; then
+        local output decision
+        output=$(run_hook "$HOOKS_DIR/guard.sh" "$FIXTURES_DIR/$fixture")
+        decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+        if [[ "$decision" == "deny" ]]; then
+            pass "guard.sh — nuclear deny: $label"
+        else
+            fail "guard.sh — nuclear deny: $label" "expected deny, got: ${decision:-no output}"
+        fi
+    else
+        skip "guard.sh — nuclear deny: $label" "fixture $fixture not found"
+    fi
+}
+
+nuclear_assert_deny "guard-nuclear-rm-rf-root.json"  "rm -rf / (filesystem destruction)"
+nuclear_assert_deny "guard-nuclear-rm-rf-home.json"   "rm -rf ~ (filesystem destruction)"
+nuclear_assert_deny "guard-nuclear-curl-pipe-sh.json"  "curl | bash (remote code execution)"
+nuclear_assert_deny "guard-nuclear-dd.json"            "dd of=/dev/sda (disk destruction)"
+nuclear_assert_deny "guard-nuclear-shutdown.json"      "shutdown (system halt)"
+nuclear_assert_deny "guard-nuclear-drop-db.json"       "DROP DATABASE (SQL destruction)"
+nuclear_assert_deny "guard-nuclear-fork-bomb.json"     "fork bomb (resource exhaustion)"
+echo ""
+
+# --- Test: guard.sh — false positives (must NOT deny) ---
+echo "--- guard.sh false positives ---"
+
+nuclear_assert_safe() {
+    local fixture="$1" label="$2"
+    if [[ -f "$FIXTURES_DIR/$fixture" ]]; then
+        local output decision
+        output=$(run_hook "$HOOKS_DIR/guard.sh" "$FIXTURES_DIR/$fixture")
+        decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+        if [[ "$decision" == "deny" ]]; then
+            fail "guard.sh — false positive: $label" "should NOT deny but got deny"
+        else
+            pass "guard.sh — false positive: $label"
+        fi
+    else
+        skip "guard.sh — false positive: $label" "fixture $fixture not found"
+    fi
+}
+
+nuclear_assert_safe "guard-safe-rm-rf.json"   "rm -rf ./node_modules (scoped delete)"
+nuclear_assert_safe "guard-safe-curl.json"    "curl | jq (not a shell)"
+nuclear_assert_safe "guard-safe-chmod.json"   "chmod 755 ./build (not 777 on root)"
+nuclear_assert_safe "guard-safe-rm-file.json" "rm file.txt (single file)"
+echo ""
+
+# --- Test: guard.sh — cross-project git ---
+echo "--- guard.sh cross-project git ---"
+
+# Create a temporary bare repo for cross-project testing
+CROSS_TEST_DIR=$(mktemp -d)
+git init --bare "$CROSS_TEST_DIR/other-repo.git" 2>/dev/null
+
+# Dynamic fixture: git -C targeting a different repo (must deny)
+CROSS_FIXTURE="$FIXTURES_DIR/guard-git-c-cross-project.json"
+cat > "$CROSS_FIXTURE" <<XEOF
+{"tool_name":"Bash","tool_input":{"command":"git -C $CROSS_TEST_DIR/other-repo.git status"}}
+XEOF
+
+output=$(run_hook "$HOOKS_DIR/guard.sh" "$CROSS_FIXTURE")
+decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+if [[ "$decision" == "deny" ]]; then
+    pass "guard.sh — cross-project git: git -C other-repo denied"
+else
+    fail "guard.sh — cross-project git: git -C other-repo" "expected deny, got: ${decision:-no output}"
+fi
+
+# git status with no -C should pass through (no cross-project check fires)
+if [[ -f "$FIXTURES_DIR/guard-safe-command.json" ]]; then
+    output=$(run_hook "$HOOKS_DIR/guard.sh" "$FIXTURES_DIR/guard-safe-command.json")
+    decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+    if [[ "$decision" != "deny" ]]; then
+        pass "guard.sh — cross-project git: plain git status passes through"
+    else
+        fail "guard.sh — cross-project git: plain git status" "should pass through but got deny"
+    fi
+fi
+
+# Same-project worktree should NOT deny
+WORKTREE_PATH="/Users/turla/claude-prd-integration"
+if [[ -d "$WORKTREE_PATH" ]]; then
+    WT_FIXTURE="$FIXTURES_DIR/guard-git-c-worktree.json"
+    cat > "$WT_FIXTURE" <<XEOF
+{"tool_name":"Bash","tool_input":{"command":"git -C $WORKTREE_PATH status"}}
+XEOF
+    output=$(run_hook "$HOOKS_DIR/guard.sh" "$WT_FIXTURE")
+    decision=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+    if [[ "$decision" == "deny" ]]; then
+        fail "guard.sh — cross-project git: same-project worktree" "should NOT deny but got deny"
+    else
+        pass "guard.sh — cross-project git: same-project worktree allowed"
+    fi
+    rm -f "$WT_FIXTURE"
+else
+    skip "guard.sh — cross-project git: same-project worktree" "worktree at $WORKTREE_PATH not found"
+fi
+
+# Cleanup
+rm -rf "$CROSS_TEST_DIR"
+rm -f "$CROSS_FIXTURE"
 echo ""
 
 # --- Test: auto-review.sh ---

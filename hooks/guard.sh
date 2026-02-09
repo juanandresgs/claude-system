@@ -56,6 +56,50 @@ EOF
     exit 0
 }
 
+# --- Check 0: Nuclear command hard deny ---
+# Unconditional deny for catastrophic commands. Fires first, no exceptions.
+# These are pure regex matches against the command STRING — never executed.
+
+# Category 1: Filesystem destruction (rm -rf on root/home/Users)
+if echo "$COMMAND" | grep -qE 'rm\s+(-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*|-[a-zA-Z]*f[a-zA-Z]*r[a-zA-Z]*)\s+(/|~|/home|/Users)\s*$' || \
+   echo "$COMMAND" | grep -qE 'rm\s+(-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*|-[a-zA-Z]*f[a-zA-Z]*r[a-zA-Z]*)\s+/\*'; then
+    deny "NUCLEAR DENY — Filesystem destruction blocked. This command would recursively delete critical system or user directories."
+fi
+
+# Category 2: Disk/device destruction (dd to device, mkfs, write to block device)
+if echo "$COMMAND" | grep -qE 'dd\s+.*of=/dev/' || \
+   echo "$COMMAND" | grep -qE '>\s*/dev/(sd|disk|nvme|vd|hd)' || \
+   echo "$COMMAND" | grep -qE '\bmkfs\b'; then
+    deny "NUCLEAR DENY — Disk/device destruction blocked. This command would overwrite or format a storage device."
+fi
+
+# Category 3: Fork bomb
+if echo "$COMMAND" | grep -qF ':(){ :|:& };:'; then
+    deny "NUCLEAR DENY — Fork bomb blocked. This command would exhaust system resources via infinite process spawning."
+fi
+
+# Category 4: Recursive permission destruction on root
+if echo "$COMMAND" | grep -qE 'chmod\s+(-[a-zA-Z]*R[a-zA-Z]*\s+)?777\s+/' || \
+   echo "$COMMAND" | grep -qE 'chmod\s+777\s+/'; then
+    deny "NUCLEAR DENY — Recursive permission destruction blocked. chmod 777 on root compromises system security."
+fi
+
+# Category 5: System shutdown/reboot
+if echo "$COMMAND" | grep -qE '\b(shutdown|reboot|halt|poweroff)\b' || \
+   echo "$COMMAND" | grep -qE '\binit\s+[06]\b'; then
+    deny "NUCLEAR DENY — System shutdown/reboot blocked. This command would halt or restart the machine."
+fi
+
+# Category 6: Remote code execution (pipe to shell)
+if echo "$COMMAND" | grep -qE '(curl|wget)\s+.*\|\s*(bash|sh|zsh|python|perl|ruby|node)\b'; then
+    deny "NUCLEAR DENY — Remote code execution blocked. Piping downloaded content directly to a shell interpreter is unsafe. Download first, inspect, then execute."
+fi
+
+# Category 7: SQL database destruction
+if echo "$COMMAND" | grep -qiE '\b(DROP\s+(DATABASE|TABLE|SCHEMA)|TRUNCATE\s+TABLE)\b'; then
+    deny "NUCLEAR DENY — SQL database destruction blocked. DROP/TRUNCATE operations permanently destroy data."
+fi
+
 # --- Check 1: /tmp/ and /private/tmp/ writes → rewrite to project tmp/ ---
 # On macOS, /tmp → /private/tmp (symlink). Both forms must be caught.
 # Allow: /private/tmp/claude-*/ (Claude Code scratchpad)
@@ -105,6 +149,44 @@ extract_git_target_dir() {
     fi
     detect_project_root
 }
+
+# --- Helper: compare repo identity via git common dir ---
+# Worktrees of the same repo share the same common dir, so they are correctly
+# treated as "same project." Returns 0 (true) if same, 1 (false) if different.
+is_same_project() {
+    local target_dir="$1"
+    local current_root
+    current_root=$(detect_project_root)
+
+    # Get common dir for current project (absolute path)
+    local current_common
+    current_common=$(cd "$current_root" && git rev-parse --git-common-dir 2>/dev/null) || return 1
+    # Resolve to absolute if relative
+    if [[ "$current_common" != /* ]]; then
+        current_common=$(cd "$current_root" && cd "$current_common" && pwd)
+    fi
+
+    # Get common dir for target (absolute path)
+    local target_common
+    target_common=$(cd "$target_dir" && git rev-parse --git-common-dir 2>/dev/null) || return 1
+    if [[ "$target_common" != /* ]]; then
+        target_common=$(cd "$target_dir" && cd "$target_common" && pwd)
+    fi
+
+    [[ "$current_common" == "$target_common" ]]
+}
+
+# --- Check 1.5: Cross-project git guard ---
+# Denies git commands that explicitly target a different repository via -C or cd.
+# Worktrees of the same repo are allowed (is_same_project handles this).
+if echo "$COMMAND" | grep -qE '(git\s+-C\s|cd\s+.*&&\s*git\s)'; then
+    CROSS_TARGET=$(extract_git_target_dir "$COMMAND")
+    if [[ -n "$CROSS_TARGET" && -d "$CROSS_TARGET" ]]; then
+        if ! is_same_project "$CROSS_TARGET"; then
+            deny "Cross-project git command blocked. Targets '$CROSS_TARGET' which is outside the current project. Operations on other repositories require explicit user action."
+        fi
+    fi
+fi
 
 # --- Check 2: Main is sacred (no commits on main/master) ---
 # Exceptions:
