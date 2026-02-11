@@ -123,8 +123,46 @@ Architecture triggers (from Phase 2 Step 1):
     - **Decision Impact:** {DEC-IDs this informed}
     - **Sources:** [1] {url}, [2] {url}
 
+**Decision Configurator Gate:** When Phase 2 identifies 3+ decisions with multiple valid approaches, or any decision where the user should explore trade-offs interactively (purchase decisions, cost comparisons, effort trade-offs), invoke `/decide` to generate an interactive configurator.
+
+**When to use `/decide` vs AskUserQuestion:**
+- Binary choice or 2 simple options → AskUserQuestion
+- 3+ options with trade-offs, costs, or effort data → `/decide`
+- Purchase decisions or anything with dollar amounts → `/decide`
+- Options with cascading dependencies → `/decide`
+
+**Full round-trip — invoking `/decide` and consuming results:**
+
+1. **Invoke:** `/decide plan` (auto-extracts decision points from current analysis) or `/decide <topic>`. The skill generates a configurator and opens it in the browser. **Wait for the user** to make selections and click "Confirm Decisions".
+
+2. **Read back:** When the user signals they're done (says "done", "confirmed", pastes JSON, etc.):
+   - If Chrome extension is available: read `window.__DECISIONS__` from the configurator tab via `javascript_tool`
+   - Otherwise: ask user to paste the JSON that was auto-copied to clipboard on confirm
+   - The JSON structure is:
+     ```json
+     {
+       "decisions": {
+         "step-id": {
+           "decId": "DEC-COMPONENT-001",
+           "selected": "option-id",
+           "title": "Option Title",
+           "rationale": "First highlight spec from option"
+         }
+       },
+       "timestamp": "2026-02-11T14:30:00Z"
+     }
+     ```
+
+3. **Write into plan:** For each decision in the JSON, write it into the MASTER_PLAN.md `### Planned Decisions` section using the exact format:
+   ```
+   - DEC-COMPONENT-001: [title] — [rationale] — Addresses: REQ-xxx
+   ```
+   The `decId` from the JSON maps directly to the plan's DEC-IDs. The `rationale` becomes the decision rationale. Cross-reference the original config's `meta.planContext.requirements` array to populate the `Addresses:` field.
+
+4. **Proceed to Step 3** below with decisions now populated from user selections rather than Planner recommendations.
+
 #### Step 3: Finalize decisions with documented trade-offs
-Incorporate research findings (or skip justifications) into the decision documentation. Each decision should now have: options considered, trade-offs, recommended approach, and the evidence basis (research findings or existing knowledge).
+Incorporate research findings (or skip justifications) and `/decide` results into the decision documentation. Each decision should now have: options considered, trade-offs, the user's chosen approach (from `/decide` if used), and the evidence basis (research findings or existing knowledge).
 
 ### Phase 3: Issue Decomposition
 1. Break the plan into discrete, parallelizable units
