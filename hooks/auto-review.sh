@@ -34,6 +34,7 @@ COMMAND=$(get_field '.tool_input.command')
 
 # ── Helpers ──────────────────────────────────────────────────────
 
+# Emit PreToolUse allow response with reason, then exit.
 approve() {
     local reason="$1"
     cat <<EOF
@@ -67,6 +68,7 @@ EOF
 # Global risk reason — set by analyzers when a command is risky
 RISK_REASON=""
 
+# Set global RISK_REASON if not already set (first risky thing wins).
 set_risk() {
     # Only set if not already set (first risky thing wins)
     if [[ -z "$RISK_REASON" ]]; then
@@ -122,7 +124,7 @@ is_safe() {
     return 0
 }
 
-# Split compound command into segments on &&, ||, ;
+# Split compound command into segments on &&, ||, ; (quote-aware).
 # Pipe chains are treated as a single unit analyzed left-to-right.
 # Quote-aware: semicolons inside single or double quotes are preserved.
 decompose_command() {

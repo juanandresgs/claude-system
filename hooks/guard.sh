@@ -4,6 +4,15 @@ set -euo pipefail
 # Sacred practice guardrails for Bash commands.
 # PreToolUse hook — matcher: Bash
 #
+# @decision DEC-GUARD-001
+# @title Multi-tier command safety gate with transparent rewrites
+# @status accepted
+# @rationale Enforces Sacred Practices mechanically via deny (hard blocks) and
+#   updatedInput (transparent rewrites). Deny prevents destructive commands
+#   (rm -rf /, git reset --hard, commits on main). Rewrite fixes unsafe patterns
+#   (/tmp/ → project tmp/, --force → --force-with-lease). Nuclear deny category
+#   blocks catastrophic commands (fork bomb, dd to device, SQL DROP) unconditionally.
+#
 # Enforces via updatedInput (transparent rewrites):
 #   - /tmp/ writes → rewritten to project tmp/ directory
 #   - git push --force → rewritten to --force-with-lease (except to main/master)
@@ -22,6 +31,7 @@ COMMAND=$(get_field '.tool_input.command')
 # Exit silently if no command
 [[ -z "$COMMAND" ]] && exit 0
 
+# Emit PreToolUse deny response with reason, then exit.
 deny() {
     local reason="$1"
     cat <<EOF
@@ -36,6 +46,7 @@ EOF
     exit 0
 }
 
+# Transparently rewrite command with JSON-escaped replacement, emit updatedInput response.
 rewrite() {
     local new_command="$1"
     local reason="$2"

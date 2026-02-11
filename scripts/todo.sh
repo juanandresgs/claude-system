@@ -40,6 +40,7 @@ TODO_IMAGES_DIR="$HOME/.claude/todo-images"
 # Rationale: follows the same dynamic-detection pattern as GLOBAL_REPO. If the user
 # forks or moves the harness repo, it auto-adapts. Status: accepted.
 
+# Verify gh CLI is installed and authenticated, exit with instructions if not.
 require_gh() {
     if ! command -v gh >/dev/null 2>&1; then
         echo "ERROR: gh CLI not found. Install it:" >&2
@@ -54,6 +55,7 @@ require_gh() {
     fi
 }
 
+# Resolve the global todo repository (user/cc-todos) via GitHub API, caching result.
 resolve_global_repo() {
     # Fast path: cached value
     if [[ -f "$CONFIG_FILE" ]]; then
@@ -84,6 +86,7 @@ CONF
     echo "Cached global repo: $GLOBAL_REPO → $CONFIG_FILE" >&2
 }
 
+# Derive config repo (owner/claude-system) from ~/.claude git remote, caching result.
 resolve_config_repo() {
     # Fast path: cached value
     if [[ -f "$CONFIG_FILE" ]]; then
@@ -119,6 +122,7 @@ resolve_config_repo() {
 
 TODO_CACHE="$HOME/.claude/.todo-count"
 
+# Write todo count to cache file for status bar enrichment.
 update_todo_cache() {
     local count="${1:-0}"
     echo "$count" > "$TODO_CACHE"
@@ -126,16 +130,19 @@ update_todo_cache() {
 
 # --- Helpers ---
 
+# Check if current directory is inside a git repository.
 is_git_repo() {
     git rev-parse --is-inside-work-tree >/dev/null 2>&1
 }
 
+# Get owner/repo slug for current repository via gh CLI.
 get_repo_name() {
     if is_git_repo; then
         gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo ""
     fi
 }
 
+# Create claude-todo label in target repository if it doesn't exist.
 ensure_label() {
     local repo="${1:-}"
     local repo_flag=""
@@ -148,6 +155,7 @@ ensure_label() {
         $repo_flag 2>/dev/null || true
 }
 
+# Create priority:high|medium|low label in target repository if it doesn't exist.
 ensure_priority_label() {
     local priority="$1"
     local repo="${2:-}"
@@ -167,6 +175,7 @@ ensure_priority_label() {
         $repo_flag 2>/dev/null || true
 }
 
+# Create component:<name> label in target repository if it doesn't exist.
 ensure_component_label() {
     local component="$1"
     local repo="${2:-}"
@@ -181,6 +190,7 @@ ensure_component_label() {
 
 # --- Image helpers ---
 
+# Save image to local cache directory with metadata for later upload.
 save_image() {
     local image_path="$1"
     local repo_slug="$2"
@@ -201,6 +211,7 @@ save_image() {
     echo "$dest_dir/$filename"
 }
 
+# Upload image to GitHub Gist, returning raw URL for markdown embedding.
 upload_image_gist() {
     local image_path="$1"
     local description="${2:-Todo image attachment}"
