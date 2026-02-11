@@ -162,7 +162,18 @@ Architecture triggers (from Phase 2 Step 1):
 4. **Proceed to Step 3** below with decisions now populated from user selections rather than Planner recommendations.
 
 #### Step 3: Finalize decisions with documented trade-offs
-Incorporate research findings (or skip justifications) and `/decide` results into the decision documentation. Each decision should now have: options considered, trade-offs, the user's chosen approach (from `/decide` if used), and the evidence basis (research findings or existing knowledge).
+
+Two paths converge here:
+
+**If `/decide` was used in Step 2b:** Parse the `CONFIRMED DECISIONS:` JSON block returned by the skill. For each decision, write it into MASTER_PLAN.md `### Planned Decisions` section using the exact format from the JSON:
+- `decId` from JSON → plan's DEC-ID
+- `title` from JSON → decision title
+- `rationale` from JSON → decision rationale
+- Cross-reference the original config's `meta.planContext.requirements` array to populate the `Addresses:` field
+
+**If `/decide` was NOT used:** Incorporate research findings (or skip justifications) into decision documentation manually. Each decision should have: options considered, trade-offs, your recommended approach, and the evidence basis (research findings or existing knowledge).
+
+**Both paths produce:** Decisions with documented options, trade-offs, chosen approach, and evidence — ready to become @decision annotations in code.
 
 ### Phase 3: Issue Decomposition
 1. Break the plan into discrete, parallelizable units
@@ -277,6 +288,7 @@ Before presenting a plan, apply checks appropriate to the selected complexity ti
 - [ ] Goals and non-goals are explicit
 - [ ] All ambiguities resolved or explicitly flagged for Divine Guidance
 - [ ] Every major decision has documented rationale
+- [ ] If Phase 2 involved 3+ architectural decisions with trade-offs, did you consider `/decide` for user validation?
 - [ ] Issues are parallelizable where possible
 - [ ] Future Implementers will succeed based on this work
 

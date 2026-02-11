@@ -171,6 +171,37 @@ Before presenting a merge for approval, you MUST provide a phase review:
 - Explicitly compare: "Plan said X. We built Y. Delta: Z."
 - If there's drift between plan and implementation, flag it and explain why
 
+#### Drift-Detected Decision Reconvergence (Optional)
+
+When implementation diverges from the plan's decisions, assess severity and respond appropriately:
+
+**Scenario:** Implementation made a decision differently than planned — different library, different algorithm, different architecture.
+
+**Three response levels:**
+
+1. **Implementation clearly better** (performance gain, simpler, fewer dependencies):
+   - Document the delta in the Decision Log
+   - Note: "DEC-XXX-001 planned Y, implemented Z because [rationale]"
+   - Proceed with merge — code is truth for HOW decisions
+
+2. **Both approaches valid** (trade-offs exist, user preference matters):
+   - Consider invoking `/decide plan` to let the user re-evaluate with implementation context
+   - Present both options: "Plan chose Y for [reason]. Implementation used Z for [reason]. Both viable."
+   - Let the user decide whether to keep implementation or revert to plan
+
+3. **Violated plan intent** (missing scope, wrong feature, breaks requirements):
+   - Flag to user immediately — this is WHAT drift, not HOW drift
+   - Requires user approval to proceed
+   - May require implementation rework
+
+**Triggers for reconvergence:**
+- @decision annotation with rationale that contradicts the plan's DEC-ID
+- Unplanned decision in code (new DEC-ID not in MASTER_PLAN.md)
+- Multiple valid paths forward surfaced during implementation
+- Scope creep opening new architectural options
+
+**When to invoke `/decide`:** If drift reveals 2+ valid approaches with meaningful trade-offs (cost, effort, maintenance), and the user should explore options interactively, invoke `/decide plan` during phase review before merge approval.
+
 ### 6. Plan Evolution (Phase-Boundary Protocol)
 
 MASTER_PLAN.md updates **only at phase boundaries**, not after every merge. A phase boundary is:
@@ -222,6 +253,12 @@ The plan is the user's vision — it changes only with the user's consent at pha
 
 ### Drift from Original Plan
 [What diverged and why, or "None — implementation matched plan"]
+
+### Decisions Requiring User Re-Evaluation (Optional)
+[Only if drift-detected reconvergence identified valid alternatives:]
+- DEC-XXX-003: Plan chose [Y], implementation used [Z]
+  - Trade-offs: [comparison]
+  - Recommendation: [Keep implementation / Revert to plan / User should decide via `/decide plan`]
 
 ### Impact on Remaining Phases
 [Any adjustments needed to future phases, or "No impact"]

@@ -43,6 +43,8 @@ Agents are interactive — they handle the full approval cycle (present → appr
 
 **Auto-dispatch to Guardian:** When work is ready for commit, invoke Guardian directly with full context (files, issue numbers, push intent). Do NOT ask "should I commit?" before dispatching. Do NOT ask "want me to push?" after Guardian returns. Guardian owns the entire approval cycle — one user approval covers stage → commit → close → push.
 
+**Decision Configurator Auto-Dispatch:** The Planner may invoke `/decide` during Phase 2 when 3+ architectural decisions have meaningful trade-offs. This is part of the Planner's workflow — the orchestrator doesn't separately dispatch `/decide`. If the Planner asks for guidance on a multi-option trade-off, suggest: "Consider `/decide plan` to let the user explore options interactively."
+
 **Pre-dispatch gate:** Before dispatching Guardian, check SubagentStop findings from check-implementer.sh. If proof-of-work was flagged as missing or pending, DO NOT dispatch Guardian. Resume the implementer to complete Phase 4 (Live Demo & Verification). The proof-of-work finding is a BLOCKING condition for Guardian dispatch.
 
 ## Sacred Practices
