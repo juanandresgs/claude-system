@@ -110,9 +110,9 @@ while IFS= read -r file; do
             VALIDATION_ISSUES+=("$file: @decision missing rationale")
         fi
     else
-        # Check if file is significant (50+ lines)
+        # Check if file is significant
         line_count=$(wc -l < "$file" 2>/dev/null | tr -d ' ')
-        if [[ "$line_count" -ge 50 ]]; then
+        if [[ "$line_count" -ge "$DECISION_LINE_THRESHOLD" ]]; then
             MISSING_DECISIONS+=("$file ($line_count lines, no @decision)")
         fi
     fi

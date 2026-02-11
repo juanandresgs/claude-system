@@ -33,19 +33,6 @@ FILE_PATH=$(get_field '.tool_input.file_path')
 [[ -z "$FILE_PATH" ]] && exit 0
 
 # --- Only inspect test files ---
-is_test_file() {
-    local file="$1"
-    [[ "$file" =~ \.test\. ]] && return 0
-    [[ "$file" =~ \.spec\. ]] && return 0
-    [[ "$file" =~ __tests__/ ]] && return 0
-    [[ "$file" =~ _test\.go$ ]] && return 0
-    [[ "$file" =~ _test\.py$ ]] && return 0
-    [[ "$file" =~ test_[^/]*\.py$ ]] && return 0
-    [[ "$file" =~ /tests/ ]] && return 0
-    [[ "$file" =~ /test/ ]] && return 0
-    return 1
-}
-
 is_test_file "$FILE_PATH" || exit 0
 
 # --- Get file content from the tool input ---

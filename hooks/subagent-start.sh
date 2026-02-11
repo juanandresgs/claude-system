@@ -55,7 +55,7 @@ case "$AGENT_TYPE" in
         if [[ "$GIT_WT_COUNT" -eq 0 ]]; then
             CONTEXT_PARTS+=("CRITICAL FIRST ACTION: No worktree detected. You MUST create a git worktree BEFORE writing any code. Run: git worktree add ../\<feature-name\> -b \<feature-name\> main — then cd into the worktree and work there. Do NOT write source code on main.")
         fi
-        CONTEXT_PARTS+=("Role: Implementer — test-first development in isolated worktrees. Add @decision annotations to 50+ line files. NEVER work on main. The branch-guard hook will DENY any source file writes on main.")
+        CONTEXT_PARTS+=("Role: Implementer — test-first development in isolated worktrees. Add @decision annotations to ${DECISION_LINE_THRESHOLD}+ line files. NEVER work on main. The branch-guard hook will DENY any source file writes on main.")
         # Inject test status
         TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
         if [[ -f "$TEST_STATUS_FILE" ]]; then

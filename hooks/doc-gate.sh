@@ -190,11 +190,11 @@ if [[ "$TOOL_NAME" == "Write" ]]; then
         deny "File $FILE_PATH missing documentation header. Every source file must start with a documentation comment describing purpose and rationale." "Add a documentation header at the top of the file:\n$TEMPLATE"
     fi
 
-    # Check @decision for 50+ line files
+    # Check @decision for significant files
     LINE_COUNT=$(echo "$CONTENT" | wc -l | tr -d ' ')
-    if [[ "$LINE_COUNT" -ge 50 ]]; then
+    if [[ "$LINE_COUNT" -ge "$DECISION_LINE_THRESHOLD" ]]; then
         if ! has_decision "$CONTENT"; then
-            deny "File $FILE_PATH is $LINE_COUNT lines but has no @decision annotation. Significant files (50+ lines) require a @decision annotation." "Add a @decision annotation to the file. See CLAUDE.md for format examples."
+            deny "File $FILE_PATH is $LINE_COUNT lines but has no @decision annotation. Significant files (${DECISION_LINE_THRESHOLD}+ lines) require a @decision annotation." "Add a @decision annotation to the file. See CLAUDE.md for format examples."
         fi
     fi
 
@@ -213,7 +213,7 @@ if [[ "$TOOL_NAME" == "Edit" ]]; then
     if has_doc_header "$FILE_CONTENT" "$EXT"; then
         # Still check @decision for large files, but only warn (don't block)
         LINE_COUNT=$(wc -l < "$FILE_PATH" | tr -d ' ')
-        if [[ "$LINE_COUNT" -ge 50 ]]; then
+        if [[ "$LINE_COUNT" -ge "$DECISION_LINE_THRESHOLD" ]]; then
             if ! has_decision "$FILE_CONTENT"; then
                 # Warn via additionalContext but don't block
                 cat <<EOF

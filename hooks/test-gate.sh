@@ -41,21 +41,7 @@ is_source_file "$FILE_PATH" || exit 0
 is_skippable_path "$FILE_PATH" && exit 0
 
 # --- Test file exemption: always allow, never increment strikes ---
-is_test_file() {
-    local file="$1"
-    [[ "$file" =~ \.test\. ]] && return 0
-    [[ "$file" =~ \.spec\. ]] && return 0
-    [[ "$file" =~ __tests__/ ]] && return 0
-    [[ "$file" =~ _test\.go$ ]] && return 0
-    [[ "$file" =~ _test\.py$ ]] && return 0
-    [[ "$file" =~ /tests/ ]] && return 0
-    [[ "$file" =~ /test/ ]] && return 0
-    return 1
-}
-
-if is_test_file "$FILE_PATH"; then
-    exit 0
-fi
+is_test_file "$FILE_PATH" && exit 0
 
 # --- Read test status ---
 PROJECT_ROOT=$(detect_project_root)
@@ -84,11 +70,7 @@ EOF
     exit 0
 fi
 
-TEST_RESULT=$(cut -d'|' -f1 "$TEST_STATUS_FILE")
-TEST_FAILS=$(cut -d'|' -f2 "$TEST_STATUS_FILE")
-TEST_TIME=$(cut -d'|' -f3 "$TEST_STATUS_FILE")
-NOW=$(date +%s)
-AGE=$(( NOW - TEST_TIME ))
+read_test_status "$PROJECT_ROOT"
 
 # Tests passing → allow + reset strikes
 if [[ "$TEST_RESULT" == "pass" ]]; then
@@ -97,7 +79,7 @@ if [[ "$TEST_RESULT" == "pass" ]]; then
 fi
 
 # Stale test status (>10 min) → allow (tests may have been fixed externally)
-if [[ "$AGE" -gt 600 ]]; then
+if [[ "$TEST_AGE" -gt "$TEST_STALENESS_THRESHOLD" ]]; then
     exit 0
 fi
 
@@ -111,6 +93,7 @@ fi
 # Increment strikes
 NEW_STRIKES=$(( CURRENT_STRIKES + 1 ))
 mkdir -p "${PROJECT_ROOT}/.claude"
+NOW=$(date +%s)
 echo "${NEW_STRIKES}|${NOW}" > "$STRIKES_FILE"
 
 if [[ "$NEW_STRIKES" -ge 2 ]]; then
@@ -120,7 +103,7 @@ if [[ "$NEW_STRIKES" -ge 2 ]]; then
   "hookSpecificOutput": {
     "hookEventName": "PreToolUse",
     "permissionDecision": "deny",
-    "permissionDecisionReason": "Tests are still failing ($TEST_FAILS failures, ${AGE}s ago). You've written source code ${NEW_STRIKES} times without fixing tests. Fix the failing tests before continuing. Test files are exempt from this gate."
+    "permissionDecisionReason": "Tests are still failing ($TEST_FAILS failures, ${TEST_AGE}s ago). You've written source code ${NEW_STRIKES} times without fixing tests. Fix the failing tests before continuing. Test files are exempt from this gate."
   }
 }
 EOF
@@ -132,7 +115,7 @@ cat <<EOF
 {
   "hookSpecificOutput": {
     "hookEventName": "PreToolUse",
-    "additionalContext": "Tests are failing ($TEST_FAILS failures, ${AGE}s ago). Consider fixing tests before writing more source code. Next source write without fixing tests will be blocked."
+    "additionalContext": "Tests are failing ($TEST_FAILS failures, ${TEST_AGE}s ago). Consider fixing tests before writing more source code. Next source write without fixing tests will be blocked."
   }
 }
 EOF

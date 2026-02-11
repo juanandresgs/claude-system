@@ -171,6 +171,14 @@ get_research_status() {
     RESEARCH_RECENT_TOPICS=$(grep '^### \[' "$log" | tail -3 | sed 's/^### \[[^]]*\] //' | paste -sd ', ' - 2>/dev/null || echo "")
 }
 
+# --- Constants ---
+# Single source of truth for thresholds and patterns across all hooks.
+# DECISION: Consolidated constants. Rationale: Magic numbers duplicated across
+# hooks create drift risk when requirements change. Status: accepted.
+DECISION_LINE_THRESHOLD=50
+TEST_STALENESS_THRESHOLD=600    # 10 minutes in seconds
+SESSION_STALENESS_THRESHOLD=1800 # 30 minutes in seconds
+
 # --- Source file detection ---
 # Single source of truth for source file extensions across all hooks.
 # DECISION: Consolidated extension list. Rationale: Source file regex was
@@ -191,6 +199,36 @@ is_skippable_path() {
     # Skip vendor/build directories
     [[ "$file" =~ (node_modules|vendor|dist|build|\.next|__pycache__|\.git) ]] && return 0
     return 1
+}
+
+# Check if a file is a test file by path and naming convention
+is_test_file() {
+    local file="$1"
+    [[ "$file" =~ \.test\. ]] && return 0
+    [[ "$file" =~ \.spec\. ]] && return 0
+    [[ "$file" =~ __tests__/ ]] && return 0
+    [[ "$file" =~ _test\.go$ ]] && return 0
+    [[ "$file" =~ _test\.py$ ]] && return 0
+    [[ "$file" =~ test_[^/]*\.py$ ]] && return 0
+    [[ "$file" =~ /tests/ ]] && return 0
+    [[ "$file" =~ /test/ ]] && return 0
+    return 1
+}
+
+# Read .test-status and populate TEST_RESULT, TEST_FAILS, TEST_TIME, TEST_AGE globals.
+# Returns 0 on success, 1 if status file doesn't exist.
+# Usage: read_test_status "$PROJECT_ROOT"
+read_test_status() {
+    local root="${1:-.}"
+    local status_file="$root/.claude/.test-status"
+    TEST_RESULT="" TEST_FAILS="" TEST_TIME="" TEST_AGE=""
+    [[ -f "$status_file" ]] || return 1
+    TEST_RESULT=$(cut -d'|' -f1 < "$status_file")
+    TEST_FAILS=$(cut -d'|' -f2 < "$status_file")
+    TEST_TIME=$(cut -d'|' -f3 < "$status_file")
+    local now; now=$(date +%s)
+    TEST_AGE=$(( now - TEST_TIME ))
+    return 0
 }
 
 # --- Safe directory cleanup ---
@@ -369,5 +407,5 @@ archive_plan() {
 }
 
 # Export for subshells
-export SOURCE_EXTENSIONS
-export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path append_audit write_statusline_cache track_subagent_start track_subagent_stop get_subagent_status safe_cleanup archive_plan
+export SOURCE_EXTENSIONS DECISION_LINE_THRESHOLD TEST_STALENESS_THRESHOLD SESSION_STALENESS_THRESHOLD
+export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path is_test_file read_test_status append_audit write_statusline_cache track_subagent_start track_subagent_stop get_subagent_status safe_cleanup archive_plan

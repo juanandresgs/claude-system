@@ -268,15 +268,9 @@ is_claude_meta_repo() {
 if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bmerge([^a-zA-Z0-9-]|$)'; then
     PROJECT_ROOT=$(detect_project_root)
     if git -C "$PROJECT_ROOT" rev-parse --git-dir > /dev/null 2>&1 && ! is_claude_meta_repo "$PROJECT_ROOT"; then
-        TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
-        if [[ -f "$TEST_STATUS_FILE" ]]; then
-            TEST_RESULT=$(cut -d'|' -f1 "$TEST_STATUS_FILE")
-            TEST_FAILS=$(cut -d'|' -f2 "$TEST_STATUS_FILE")
-            TEST_TIME=$(cut -d'|' -f3 "$TEST_STATUS_FILE")
-            NOW=$(date +%s)
-            AGE=$(( NOW - TEST_TIME ))
-            if [[ "$TEST_RESULT" == "fail" && "$AGE" -lt 600 ]]; then
-                deny "Cannot merge: tests are failing ($TEST_FAILS failures, ${AGE}s ago). Fix test failures before merging."
+        if read_test_status "$PROJECT_ROOT"; then
+            if [[ "$TEST_RESULT" == "fail" && "$TEST_AGE" -lt "$TEST_STALENESS_THRESHOLD" ]]; then
+                deny "Cannot merge: tests are failing ($TEST_FAILS failures, ${TEST_AGE}s ago). Fix test failures before merging."
             fi
             if [[ "$TEST_RESULT" != "pass" ]]; then
                 deny "Cannot merge: last test run did not pass (status: $TEST_RESULT). Run tests and ensure they pass."
@@ -291,15 +285,9 @@ fi
 if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bcommit([^a-zA-Z0-9-]|$)'; then
     PROJECT_ROOT=$(extract_git_target_dir "$COMMAND")
     if git -C "$PROJECT_ROOT" rev-parse --git-dir > /dev/null 2>&1 && ! is_claude_meta_repo "$PROJECT_ROOT"; then
-        TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
-        if [[ -f "$TEST_STATUS_FILE" ]]; then
-            TEST_RESULT=$(cut -d'|' -f1 "$TEST_STATUS_FILE")
-            TEST_FAILS=$(cut -d'|' -f2 "$TEST_STATUS_FILE")
-            TEST_TIME=$(cut -d'|' -f3 "$TEST_STATUS_FILE")
-            NOW=$(date +%s)
-            AGE=$(( NOW - TEST_TIME ))
-            if [[ "$TEST_RESULT" == "fail" && "$AGE" -lt 600 ]]; then
-                deny "Cannot commit: tests are failing ($TEST_FAILS failures, ${AGE}s ago). Fix test failures before committing."
+        if read_test_status "$PROJECT_ROOT"; then
+            if [[ "$TEST_RESULT" == "fail" && "$TEST_AGE" -lt "$TEST_STALENESS_THRESHOLD" ]]; then
+                deny "Cannot commit: tests are failing ($TEST_FAILS failures, ${TEST_AGE}s ago). Fix test failures before committing."
             fi
             if [[ "$TEST_RESULT" != "pass" ]]; then
                 deny "Cannot commit: last test run did not pass (status: $TEST_RESULT). Run tests and ensure they pass."

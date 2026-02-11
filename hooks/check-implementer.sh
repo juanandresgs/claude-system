@@ -51,13 +51,13 @@ if [[ -n "$CHANGES" && -f "$CHANGES" ]]; then
     while IFS= read -r file; do
         [[ ! -f "$file" ]] && continue
         # Only check source files
-        [[ ! "$file" =~ \.(ts|tsx|js|jsx|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh)$ ]] && continue
+        is_source_file "$file" || continue
         # Skip test/config
-        [[ "$file" =~ (\.test\.|\.spec\.|__tests__|\.config\.|node_modules|vendor|dist|\.git|\.claude) ]] && continue
+        is_skippable_path "$file" && continue
 
         # Check line count
         line_count=$(wc -l < "$file" 2>/dev/null | tr -d ' ')
-        if [[ "$line_count" -ge 50 ]]; then
+        if [[ "$line_count" -ge "$DECISION_LINE_THRESHOLD" ]]; then
             if ! grep -qE "$DECISION_PATTERN" "$file" 2>/dev/null; then
                 ((MISSING_COUNT++)) || true
                 MISSING_FILES+="  - $(basename "$file") ($line_count lines)\n"
@@ -82,15 +82,9 @@ if [[ -n "$RESPONSE_TEXT" ]]; then
 fi
 
 # Check 4: Test status verification
-TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
-if [[ -f "$TEST_STATUS_FILE" ]]; then
-    TEST_RESULT=$(cut -d'|' -f1 "$TEST_STATUS_FILE")
-    TEST_FAILS=$(cut -d'|' -f2 "$TEST_STATUS_FILE")
-    TEST_TIME=$(cut -d'|' -f3 "$TEST_STATUS_FILE")
-    NOW=$(date +%s)
-    AGE=$(( NOW - TEST_TIME ))
-    if [[ "$TEST_RESULT" == "fail" && "$AGE" -lt 1800 ]]; then
-        ISSUES+=("Tests failing ($TEST_FAILS failures, ${AGE}s ago) — implementation not complete")
+if read_test_status "$PROJECT_ROOT"; then
+    if [[ "$TEST_RESULT" == "fail" && "$TEST_AGE" -lt 1800 ]]; then
+        ISSUES+=("Tests failing ($TEST_FAILS failures, ${TEST_AGE}s ago) — implementation not complete")
     fi
 else
     # No test results at all — warn (project may not have tests, so advisory)

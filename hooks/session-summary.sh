@@ -80,7 +80,6 @@ get_plan_status "$PROJECT_ROOT"
 TEST_RESULT="unknown"
 TEST_FAILS=0
 TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
-STALENESS_THRESHOLD=1800  # 30 minutes in seconds
 
 # Brief wait for async test-runner if it's still running
 if [[ ! -f "$TEST_STATUS_FILE" ]] && pgrep -f "test-runner\\.sh" >/dev/null 2>&1; then
@@ -98,7 +97,7 @@ if [[ -f "$TEST_STATUS_FILE" ]]; then
     FILE_MOD=$(stat -f '%m' "$TEST_STATUS_FILE" 2>/dev/null || stat -c '%Y' "$TEST_STATUS_FILE" 2>/dev/null || echo "0")
     NOW=$(date +%s)
     FILE_AGE=$(( NOW - FILE_MOD ))
-    if [[ "$FILE_AGE" -le "$STALENESS_THRESHOLD" ]]; then
+    if [[ "$FILE_AGE" -le "$SESSION_STALENESS_THRESHOLD" ]]; then
         TEST_RESULT=$(cut -d'|' -f1 "$TEST_STATUS_FILE")
         TEST_FAILS=$(cut -d'|' -f2 "$TEST_STATUS_FILE")
     fi
