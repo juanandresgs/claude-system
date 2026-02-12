@@ -47,6 +47,13 @@ Agents are interactive — they handle the full approval cycle (present → appr
 
 **Pre-dispatch gate:** Before dispatching Guardian, check SubagentStop findings from check-implementer.sh. If proof-of-work was flagged as missing or pending, DO NOT dispatch Guardian. Resume the implementer to complete Phase 4 (Live Demo & Verification). The proof-of-work finding is a BLOCKING condition for Guardian dispatch.
 
+**Trace Protocol:** Agents write evidence to disk (TRACE_DIR/artifacts/), not return messages. Return messages stay under 1500 tokens. Read TRACE_DIR/summary.md for details on demand.
+
+**max_turns enforcement:** Every Task invocation MUST include max_turns.
+- Implementer: max_turns=75
+- Planner: max_turns=40
+- Guardian: max_turns=30
+
 ## Sacred Practices
 
 1. **Always Use Git** — Initialize or integrate with git. Save incrementally. Always be able to rollback.

@@ -406,6 +406,221 @@ archive_plan() {
     echo "$archive_name"
 }
 
+# --- Trace protocol ---
+# Universal trace store for cross-project agent trajectory tracking.
+# Each agent run gets a unique trace directory with manifest, summary, and artifacts.
+# Traces survive session crashes, compactions, and context overflows.
+
+TRACE_STORE="$HOME/.claude/traces"
+
+# Initialize a trace directory for a new agent run.
+# Usage: init_trace "/path/to/project" "implementer"
+# Returns: trace_id (or empty on failure)
+init_trace() {
+    local project_root="$1"
+    local agent_type="${2:-unknown}"
+    local session_id="${CLAUDE_SESSION_ID:-$(date +%s)}"
+    local timestamp
+    timestamp=$(date +%Y%m%d-%H%M%S)
+    local hash
+    hash=$(echo "${session_id}" | shasum -a 256 2>/dev/null | cut -c1-6)
+    local trace_id="${agent_type}-${timestamp}-${hash}"
+    local trace_dir="${TRACE_STORE}/${trace_id}"
+
+    mkdir -p "${trace_dir}/artifacts" || return 1
+
+    # Write initial manifest
+    local project_name
+    project_name=$(basename "$project_root")
+    local branch
+    branch=$(git -C "$project_root" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+
+    cat > "${trace_dir}/manifest.json" <<MANIFEST
+{
+  "version": "1",
+  "trace_id": "${trace_id}",
+  "agent_type": "${agent_type}",
+  "session_id": "${session_id}",
+  "project": "${project_root}",
+  "project_name": "${project_name}",
+  "branch": "${branch}",
+  "started_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "status": "active"
+}
+MANIFEST
+
+    # Active marker for detection
+    echo "${trace_id}" > "${TRACE_STORE}/.active-${agent_type}-${session_id}"
+
+    echo "${trace_id}"
+}
+
+# Detect active trace for current session and agent type.
+# Usage: detect_active_trace "/path/to/project" "implementer"
+# Returns: trace_id (or empty if none active)
+detect_active_trace() {
+    local project_root="$1"
+    local agent_type="${2:-unknown}"
+    local session_id="${CLAUDE_SESSION_ID:-}"
+
+    # Try session-specific marker first
+    if [[ -n "$session_id" ]]; then
+        local marker="${TRACE_STORE}/.active-${agent_type}-${session_id}"
+        if [[ -f "$marker" ]]; then
+            cat "$marker"
+            return 0
+        fi
+    fi
+
+    # Fallback: find most recent active marker for this agent type
+    local latest
+    latest=$(ls -t "${TRACE_STORE}/.active-${agent_type}-"* 2>/dev/null | head -1)
+    if [[ -n "$latest" && -f "$latest" ]]; then
+        cat "$latest"
+        return 0
+    fi
+
+    return 1
+}
+
+# Finalize a trace after agent completion.
+# Updates manifest with outcome, duration, test results. Indexes the trace.
+# Usage: finalize_trace "trace_id" "/path/to/project" "implementer"
+finalize_trace() {
+    local trace_id="$1"
+    local project_root="$2"
+    local agent_type="${3:-unknown}"
+    local trace_dir="${TRACE_STORE}/${trace_id}"
+    local manifest="${trace_dir}/manifest.json"
+
+    [[ ! -f "$manifest" ]] && return 1
+
+    # Calculate duration
+    local started_at
+    started_at=$(jq -r '.started_at // empty' "$manifest" 2>/dev/null)
+    local duration=0
+    if [[ -n "$started_at" ]]; then
+        local start_epoch
+        start_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$started_at" +%s 2>/dev/null || date -d "$started_at" +%s 2>/dev/null || echo "0")
+        local now_epoch
+        now_epoch=$(date +%s)
+        if [[ "$start_epoch" -gt 0 ]]; then
+            duration=$(( now_epoch - start_epoch ))
+        fi
+    fi
+
+    # Determine outcome from artifacts
+    local outcome="unknown"
+    local test_result="unknown"
+    local proof_status="unknown"
+
+    # Check test output
+    if [[ -f "${trace_dir}/artifacts/test-output.txt" ]]; then
+        if grep -qiE 'passed|success|ok' "${trace_dir}/artifacts/test-output.txt" 2>/dev/null; then
+            test_result="pass"
+        elif grep -qiE 'failed|error|failure' "${trace_dir}/artifacts/test-output.txt" 2>/dev/null; then
+            test_result="fail"
+        fi
+    fi
+
+    # Check proof status from project
+    local proof_file="${project_root}/.claude/.proof-status"
+    if [[ -f "$proof_file" ]]; then
+        local ps
+        ps=$(cut -d'|' -f1 "$proof_file")
+        if [[ "$ps" == "verified" ]]; then
+            proof_status="verified"
+        elif [[ "$ps" == "pending" ]]; then
+            proof_status="pending"
+        fi
+    fi
+
+    # Determine overall outcome
+    if [[ "$test_result" == "pass" ]]; then
+        outcome="success"
+    elif [[ "$test_result" == "fail" ]]; then
+        outcome="failure"
+    else
+        outcome="partial"
+    fi
+
+    # Count files changed
+    local files_changed=0
+    if [[ -f "${trace_dir}/artifacts/files-changed.txt" ]]; then
+        files_changed=$(wc -l < "${trace_dir}/artifacts/files-changed.txt" | tr -d ' ')
+    fi
+
+    # Check if summary exists; if not, it's likely a crash
+    local trace_status="completed"
+    if [[ ! -f "${trace_dir}/summary.md" ]]; then
+        trace_status="crashed"
+        outcome="crashed"
+    fi
+
+    # Update manifest with jq (merge new fields)
+    local tmp_manifest="${manifest}.tmp"
+    jq --arg finished_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+       --argjson duration "$duration" \
+       --arg trace_status "$trace_status" \
+       --arg outcome "$outcome" \
+       --arg test_result "$test_result" \
+       --arg proof_status "$proof_status" \
+       --argjson files_changed "$files_changed" \
+       '. + {
+         finished_at: $finished_at,
+         duration_seconds: $duration,
+         status: $trace_status,
+         outcome: $outcome,
+         test_result: $test_result,
+         proof_status: $proof_status,
+         files_changed: $files_changed
+       }' "$manifest" > "$tmp_manifest" 2>/dev/null && mv "$tmp_manifest" "$manifest"
+
+    # Clean active marker
+    local session_id="${CLAUDE_SESSION_ID:-}"
+    rm -f "${TRACE_STORE}/.active-${agent_type}-${session_id}" 2>/dev/null
+    # Also try wildcard cleanup for this agent type (handles session ID mismatch)
+    for marker in "${TRACE_STORE}/.active-${agent_type}-"*; do
+        if [[ -f "$marker" ]]; then
+            local marker_trace
+            marker_trace=$(cat "$marker" 2>/dev/null)
+            if [[ "$marker_trace" == "$trace_id" ]]; then
+                rm -f "$marker"
+            fi
+        fi
+    done
+
+    # Index the trace
+    index_trace "$trace_id"
+}
+
+# Append a compact JSON line to the trace index for querying.
+# Usage: index_trace "trace_id"
+index_trace() {
+    local trace_id="$1"
+    local manifest="${TRACE_STORE}/${trace_id}/manifest.json"
+
+    [[ ! -f "$manifest" ]] && return 1
+
+    # Extract fields for compact index entry
+    local entry
+    entry=$(jq -c '{
+      trace_id: .trace_id,
+      agent_type: .agent_type,
+      project_name: .project_name,
+      branch: .branch,
+      started_at: .started_at,
+      duration_seconds: (.duration_seconds // 0),
+      outcome: (.outcome // "unknown"),
+      test_result: (.test_result // "unknown"),
+      files_changed: (.files_changed // 0)
+    }' "$manifest" 2>/dev/null)
+
+    if [[ -n "$entry" ]]; then
+        echo "$entry" >> "${TRACE_STORE}/index.jsonl"
+    fi
+}
+
 # Export for subshells
-export SOURCE_EXTENSIONS DECISION_LINE_THRESHOLD TEST_STALENESS_THRESHOLD SESSION_STALENESS_THRESHOLD
-export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path is_test_file read_test_status append_audit write_statusline_cache track_subagent_start track_subagent_stop get_subagent_status safe_cleanup archive_plan
+export TRACE_STORE SOURCE_EXTENSIONS DECISION_LINE_THRESHOLD TEST_STALENESS_THRESHOLD SESSION_STALENESS_THRESHOLD
+export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path is_test_file read_test_status append_audit write_statusline_cache track_subagent_start track_subagent_stop get_subagent_status safe_cleanup archive_plan init_trace detect_active_trace finalize_trace index_trace

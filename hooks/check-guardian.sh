@@ -20,6 +20,14 @@ PLAN="$PROJECT_ROOT/MASTER_PLAN.md"
 
 # Track subagent completion
 track_subagent_stop "$PROJECT_ROOT" "guardian"
+
+# --- Trace protocol: detect and prepare for finalization ---
+TRACE_ID=$(detect_active_trace "$PROJECT_ROOT" "guardian" 2>/dev/null || echo "")
+TRACE_DIR=""
+if [[ -n "$TRACE_ID" ]]; then
+    TRACE_DIR="${TRACE_STORE}/${TRACE_ID}"
+fi
+
 get_git_state "$PROJECT_ROOT"
 get_plan_status "$PROJECT_ROOT"
 write_statusline_cache "$PROJECT_ROOT"
@@ -100,6 +108,22 @@ if read_test_status "$PROJECT_ROOT"; then
     fi
 else
     ISSUES+=("No test results found — verify tests were run before committing")
+fi
+
+# --- Trace protocol: finalize trace ---
+if [[ -n "$TRACE_ID" ]]; then
+    if [[ ! -f "$TRACE_DIR/summary.md" ]]; then
+        echo "$RESPONSE_TEXT" | head -c 4000 > "$TRACE_DIR/summary.md" 2>/dev/null || true
+    fi
+    finalize_trace "$TRACE_ID" "$PROJECT_ROOT" "guardian"
+fi
+
+# Response size advisory
+if [[ -n "$RESPONSE_TEXT" ]]; then
+    WORD_COUNT=$(echo "$RESPONSE_TEXT" | wc -w | tr -d ' ')
+    if [[ "$WORD_COUNT" -gt 1200 ]]; then
+        ISSUES+=("Agent response too large (~${WORD_COUNT} words). Use TRACE_DIR for verbose output.")
+    fi
 fi
 
 # Build context message

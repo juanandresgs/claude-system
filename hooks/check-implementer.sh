@@ -22,6 +22,14 @@ PROJECT_ROOT=$(detect_project_root)
 
 # Track subagent completion
 track_subagent_stop "$PROJECT_ROOT" "implementer"
+
+# --- Trace protocol: detect and prepare for finalization ---
+TRACE_ID=$(detect_active_trace "$PROJECT_ROOT" "implementer" 2>/dev/null || echo "")
+TRACE_DIR=""
+if [[ -n "$TRACE_ID" ]]; then
+    TRACE_DIR="${TRACE_STORE}/${TRACE_ID}"
+fi
+
 get_git_state "$PROJECT_ROOT"
 get_plan_status "$PROJECT_ROOT"
 write_statusline_cache "$PROJECT_ROOT"
@@ -108,6 +116,29 @@ if [[ -f "$PROOF_FILE" ]]; then
 else
     PROOF_MISSING=true
     ISSUES+=("No proof-of-work verification — user has not confirmed feature works (.proof-status missing)")
+fi
+
+# --- Trace protocol: finalize trace ---
+if [[ -n "$TRACE_ID" ]]; then
+    # Fallback: if agent didn't write summary.md, save response excerpt
+    if [[ ! -f "$TRACE_DIR/summary.md" ]]; then
+        echo "$RESPONSE_TEXT" | head -c 4000 > "$TRACE_DIR/summary.md" 2>/dev/null || true
+    fi
+    # Validate expected artifacts
+    for artifact in test-output.txt files-changed.txt; do
+        if [[ ! -f "$TRACE_DIR/artifacts/$artifact" ]]; then
+            ISSUES+=("Trace artifact missing: $artifact (TRACE_DIR=$TRACE_DIR)")
+        fi
+    done
+    finalize_trace "$TRACE_ID" "$PROJECT_ROOT" "implementer"
+fi
+
+# Response size advisory
+if [[ -n "$RESPONSE_TEXT" ]]; then
+    WORD_COUNT=$(echo "$RESPONSE_TEXT" | wc -w | tr -d ' ')
+    if [[ "$WORD_COUNT" -gt 1200 ]]; then
+        ISSUES+=("Agent response too large (~${WORD_COUNT} words). Use TRACE_DIR/artifacts/ for verbose output, return ≤1500 token summary.")
+    fi
 fi
 
 # Build context message

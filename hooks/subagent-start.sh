@@ -28,6 +28,21 @@ get_plan_status "$PROJECT_ROOT"
 # Track subagent spawn
 track_subagent_start "$PROJECT_ROOT" "${AGENT_TYPE:-unknown}"
 
+# --- Trace protocol: initialize trace directory ---
+TRACE_ID=""
+TRACE_DIR=""
+case "$AGENT_TYPE" in
+    Bash|Explore)
+        # Lightweight agents — no trace
+        ;;
+    *)
+        TRACE_ID=$(init_trace "$PROJECT_ROOT" "${AGENT_TYPE:-unknown}" 2>/dev/null || echo "")
+        if [[ -n "$TRACE_ID" ]]; then
+            TRACE_DIR="${TRACE_STORE}/${TRACE_ID}"
+        fi
+        ;;
+esac
+
 CTX_LINE="Context:"
 [[ -n "$GIT_BRANCH" ]] && CTX_LINE="$CTX_LINE $GIT_BRANCH"
 [[ "$GIT_DIRTY_COUNT" -gt 0 ]] && CTX_LINE="$CTX_LINE | $GIT_DIRTY_COUNT dirty"
@@ -48,6 +63,9 @@ case "$AGENT_TYPE" in
             CONTEXT_PARTS+=("Research: $RESEARCH_ENTRY_COUNT entries ($RESEARCH_RECENT_TOPICS). Read .claude/research-log.md before researching — avoid duplicates.")
         else
             CONTEXT_PARTS+=("No prior research. /deep-research for tech comparisons, /last30days for community sentiment.")
+        fi
+        if [[ -n "$TRACE_DIR" ]]; then
+            CONTEXT_PARTS+=("TRACE_DIR=$TRACE_DIR — Write verbose output to TRACE_DIR/artifacts/ (analysis.md, decisions.json). Write TRACE_DIR/summary.md before returning. Keep return message under 1500 tokens.")
         fi
         ;;
     implementer)
@@ -70,6 +88,9 @@ case "$AGENT_TYPE" in
             CONTEXT_PARTS+=("Research log: $RESEARCH_ENTRY_COUNT entries. Check .claude/research-log.md before researching APIs or libraries.")
         fi
         CONTEXT_PARTS+=("VERIFICATION: Before committing, discover project MCP tools and use them to verify. Present verification checkpoint to user with live test instructions. User must confirm before commit.")
+        if [[ -n "$TRACE_DIR" ]]; then
+            CONTEXT_PARTS+=("TRACE_DIR=$TRACE_DIR — Write verbose output to TRACE_DIR/artifacts/ (test-output.txt, diff.patch, files-changed.txt, proof-evidence.txt). Write TRACE_DIR/summary.md before returning. Keep return message under 1500 tokens.")
+        fi
         ;;
     guardian)
         CONTEXT_PARTS+=("Role: Guardian — Update MASTER_PLAN.md ONLY at phase boundaries: when a merge completes a phase, update status to completed, populate Decision Log, present diff to user. For non-phase-completing merges, do NOT update the plan — close the relevant GitHub issues instead. Always: verify @decision annotations, check for staged secrets, require explicit approval.")
@@ -82,12 +103,18 @@ case "$AGENT_TYPE" in
                 CONTEXT_PARTS+=("CRITICAL: Tests FAILING ($TS_FAILS failures). Do NOT commit/merge until tests pass.")
             fi
         fi
+        if [[ -n "$TRACE_DIR" ]]; then
+            CONTEXT_PARTS+=("TRACE_DIR=$TRACE_DIR — Write verbose output to TRACE_DIR/artifacts/ (merge-analysis.md). Write TRACE_DIR/summary.md before returning. Keep return message under 1500 tokens.")
+        fi
         ;;
     Bash|Explore)
         # Lightweight agents — minimal context
         ;;
     *)
         CONTEXT_PARTS+=("Agent type: ${AGENT_TYPE:-unknown}")
+        if [[ -n "$TRACE_DIR" ]]; then
+            CONTEXT_PARTS+=("TRACE_DIR=$TRACE_DIR — Write verbose output to TRACE_DIR/artifacts/. Write TRACE_DIR/summary.md before returning. Keep return message under 1500 tokens.")
+        fi
         ;;
 esac
 

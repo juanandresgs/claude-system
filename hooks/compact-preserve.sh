@@ -92,6 +92,17 @@ if [[ -f "$FINDINGS_FILE" && -s "$FINDINGS_FILE" ]]; then
     done < "$FINDINGS_FILE"
 fi
 
+# --- Active traces ---
+if [[ -d "$TRACE_STORE" ]]; then
+    for marker in "$TRACE_STORE"/.active-*; do
+        [[ ! -f "$marker" ]] && continue
+        active_trace_id=$(cat "$marker" 2>/dev/null || echo "")
+        if [[ -n "$active_trace_id" ]]; then
+            CONTEXT_PARTS+=("Active trace: $active_trace_id (agent still running). TRACE_DIR=~/.claude/traces/$active_trace_id")
+        fi
+    done
+fi
+
 # --- Audit trail (last 5) ---
 AUDIT_LOG="${PROJECT_ROOT}/.claude/.audit-log"
 if [[ -f "$AUDIT_LOG" && -s "$AUDIT_LOG" ]]; then

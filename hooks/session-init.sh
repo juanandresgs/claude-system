@@ -113,6 +113,49 @@ for pattern in "$PROJECT_ROOT/.claude/.session-changes"* "$PROJECT_ROOT/.claude/
 done
 [[ "$STALE_FILE_COUNT" -gt 0 ]] && CONTEXT_PARTS+=("Stale session files: $STALE_FILE_COUNT from previous session")
 
+# --- Trace protocol: surface incomplete and recent traces ---
+if [[ -d "$TRACE_STORE" ]]; then
+    # Clean up stale active markers (agent crashed without SubagentStop)
+    for marker in "$TRACE_STORE"/.active-*; do
+        [[ ! -f "$marker" ]] && continue
+        local_trace_id=$(cat "$marker" 2>/dev/null || echo "")
+        if [[ -n "$local_trace_id" ]]; then
+            local_manifest="$TRACE_STORE/$local_trace_id/manifest.json"
+            if [[ -f "$local_manifest" ]]; then
+                # Check if marker is stale (>2 hours)
+                if [[ "$(uname)" == "Darwin" ]]; then
+                    marker_age=$(( $(date +%s) - $(stat -f %m "$marker" 2>/dev/null || echo "0") ))
+                else
+                    marker_age=$(( $(date +%s) - $(stat -c %Y "$marker" 2>/dev/null || echo "0") ))
+                fi
+                if [[ "$marker_age" -gt 7200 ]]; then
+                    # Mark as crashed and finalize
+                    jq '.status = "crashed" | .outcome = "crashed"' "$local_manifest" > "${local_manifest}.tmp" 2>/dev/null && mv "${local_manifest}.tmp" "$local_manifest"
+                    index_trace "$local_trace_id"
+                    rm -f "$marker"
+                    CONTEXT_PARTS+=("Crashed trace detected: $local_trace_id (stale ${marker_age}s). Read summary: ~/.claude/traces/$local_trace_id/summary.md")
+                fi
+            else
+                rm -f "$marker"
+            fi
+        fi
+    done
+
+    # Surface last completed trace for current project
+    if [[ -f "$TRACE_STORE/index.jsonl" ]]; then
+        PROJECT_NAME=$(basename "$PROJECT_ROOT")
+        LAST_TRACE=$(grep "\"project_name\":\"${PROJECT_NAME}\"" "$TRACE_STORE/index.jsonl" 2>/dev/null | tail -1 || echo "")
+        if [[ -n "$LAST_TRACE" ]]; then
+            LT_ID=$(echo "$LAST_TRACE" | jq -r '.trace_id // empty' 2>/dev/null)
+            LT_OUTCOME=$(echo "$LAST_TRACE" | jq -r '.outcome // "unknown"' 2>/dev/null)
+            LT_TYPE=$(echo "$LAST_TRACE" | jq -r '.agent_type // "unknown"' 2>/dev/null)
+            if [[ -n "$LT_ID" ]]; then
+                CONTEXT_PARTS+=("Last trace: ${LT_TYPE} ${LT_OUTCOME} — ~/.claude/traces/${LT_ID}/summary.md")
+            fi
+        fi
+    fi
+fi
+
 # --- Todo HUD (listing with active-session annotations) ---
 TODO_SCRIPT="$HOME/.claude/scripts/todo.sh"
 if [[ -x "$TODO_SCRIPT" ]] && command -v gh >/dev/null 2>&1; then
