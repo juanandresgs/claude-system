@@ -208,6 +208,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "mcp__playwright__browser_snapshot",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/playwright-cleanup.sh",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "Notification": [
@@ -323,7 +333,6 @@
     "type": "command",
     "command": "$HOME/.claude/scripts/statusline.sh"
   },
-  "fastMode": true,
   "autoUpdatesChannel": "latest",
   "installation": {
     "method": "native"
