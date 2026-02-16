@@ -34,6 +34,14 @@ if [[ -n "$GIT_BRANCH" ]]; then
     fi
 fi
 
+# --- MASTER_PLAN.md preamble: preserve for post-compaction context ---
+if [[ -f "$PROJECT_ROOT/MASTER_PLAN.md" ]]; then
+    PREAMBLE=$(awk '/^---$|^## Original Intent/{exit} {print}' "$PROJECT_ROOT/MASTER_PLAN.md" | head -30)
+    if [[ -n "$PREAMBLE" ]]; then
+        CONTEXT_PARTS+=("$PREAMBLE")
+    fi
+fi
+
 # --- MASTER_PLAN.md (via shared library) ---
 get_plan_status "$PROJECT_ROOT"
 

@@ -45,6 +45,11 @@ else
         ISSUES+=("MASTER_PLAN.md has no ## Phase headers")
     fi
 
+    # Check 2b: Has Project Overview section
+    if ! grep -q '^## Project Overview' "$PLAN" 2>/dev/null; then
+        ISSUES+=("MASTER_PLAN.md lacks ## Project Overview section — new sessions won't have project context")
+    fi
+
     # Check 3: Has intent/vision/purpose section
     if ! grep -qiE '^\#\#\s*(intent|vision|purpose|problem|overview|goal)' "$PLAN" 2>/dev/null; then
         # Also check for common first-section patterns

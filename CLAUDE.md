@@ -57,6 +57,12 @@ Agents are interactive — they handle the full approval cycle (present → appr
 
 **Trace Protocol:** Agents write evidence to disk (TRACE_DIR/artifacts/), not return messages. Return messages stay under 1500 tokens. Read TRACE_DIR/summary.md for details on demand.
 
+**Session Acclimation:** MASTER_PLAN.md's Project Overview section is auto-injected at
+session start. This provides project identity, architecture, and active work context.
+Development log digest (recent traces) shows what agents did recently.
+Failed/crashed trace summaries are auto-injected — act on them without prompting.
+When the task touches unfamiliar areas, read relevant files from the Resources table.
+
 **max_turns enforcement:** Every Task invocation MUST include max_turns.
 - Implementer: max_turns=75
 - Planner: max_turns=40

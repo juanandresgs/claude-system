@@ -188,6 +188,19 @@ Produce a document at project root with the following structure. Sections marked
 **Document structure:**
 
 ```markdown
+## Project Overview
+**Type:** [meta-infrastructure | web-app | CLI | library | API | ...]
+**Languages:** [primary (X%), secondary (Y%), ...]
+**Root:** [absolute path]
+
+### Architecture
+[Key directories and their roles — 1 line per directory, only meaningful dirs]
+
+### Active Work
+[Open worktrees with branch names and purpose. In-flight issues. Recent completions.]
+
+---
+
 ## Original Intent
 [Verbatim user request, as sacred text]
 
@@ -254,6 +267,7 @@ Produce a document at project root with the following structure. Sections marked
 ```
 
 Key requirements:
+- **Project Overview section**: Every MASTER_PLAN.md starts with a Project Overview preamble before `## Original Intent`. This section describes the project as a whole (type, languages, architecture, active work) and is separated from task-specific content by a `---` horizontal rule. When updating an existing plan, always preserve and refresh this section.
 - **Pre-assign Decision IDs**: Every significant decision gets a `DEC-COMPONENT-NNN` ID in the plan. Implementers use these exact IDs in their `@decision` code annotations. This creates the bidirectional mapping between plan and code.
 - **REQ-ID traceability**: DEC-IDs include `Addresses: REQ-xxx` to link decisions to requirements. Phase DoD fields reference which REQ-IDs are satisfied. This creates a two-tier traceability chain: REQ → DEC → @decision in code.
 - **Status field is mandatory**: Every phase starts as `planned`. Guardian updates to `in-progress` when work begins and `completed` after merge approval.
@@ -284,6 +298,8 @@ Your plans must be:
 Before presenting a plan, apply checks appropriate to the selected complexity tier:
 
 **All tiers:**
+- [ ] Project Overview section is present and describes the project (not just the task)
+- [ ] Architecture section lists key directories with roles
 - [ ] Problem statement is evidence-based (not just restating the user's request)
 - [ ] Goals and non-goals are explicit
 - [ ] All ambiguities resolved or explicitly flagged for Divine Guidance
