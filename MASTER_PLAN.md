@@ -1,4 +1,4 @@
-# MASTER_PLAN: Claude Code Configuration System
+# MASTER_PLAN: Claude System v2 — Governance + Observability
 
 ## Project Overview
 **Type:** meta-infrastructure (hooks, agents, skills, commands)
@@ -15,388 +15,307 @@
   tests/     — Hook validation suite (121 tests)
 
 ### Active Work
-  feat/trace-surfacing (worktree) — Trace digest + crash injection [ready to merge]
+  v2 Governance + Observability — fuse observability into governance layer
 
 ---
 
 ## Original Intent
 
-> Deep research provider timeouts are too aggressive — 10 min ceiling cuts off
-> 50%+ of legitimate Gemini/OpenAI queries. Increase ceilings, add terminal state
-> handling, adaptive poll intervals, zombie detection, progress output with elapsed
-> time, and Gemini streaming with thinking_summaries for real-time progress.
-
-GitHub Issue: #48
+> v1 is a governance layer: hooks enforce Sacred Practices, prevent bad states, gate
+> commits on evidence. Strong at enforcement. Weak at memory. v2 fuses observability
+> into that same layer. Hooks shift from gatekeeper to advisor. Agents share a session
+> narrative. Commits tell stories. The system remembers friction and avoids repeating it.
 
 ## Problem Statement
 
-The deep research skill's 10-minute timeout ceiling (`MAX_POLL_ATTEMPTS * POLL_INTERVAL
-= 600s` for both Gemini and OpenAI) prematurely aborts approximately 50% of legitimate
-deep research queries. Evidence from research (captured in issue #48):
-
-- **Gemini**: Typical 5-20 minutes, maximum 60 minutes per official Interactions API docs.
-- **OpenAI**: Typical 5-30 minutes, can exceed 1 hour when queued (per community reports).
-- **Perplexity**: Synchronous, 2-4 minutes typical. Its 300s timeout is adequate.
-
-The current polling loops also silently poll with zero elapsed-time feedback, treat only
-`completed` and `failed` as terminal states (missing `incomplete`, `cancelled`), and have
-no way to detect zombie tasks that stopped progressing.
-
-The user specifically requires Gemini streaming with `thinking_summaries` to show what
-Gemini is doing during long research runs — this replaces blind polling with event-driven
-progress for the Gemini provider.
+The v1 system is stateless within sessions and amnesiac across sessions:
+- Hooks fire, decide, forget — no trajectory awareness
+- Agents pass artifacts in isolation, not sharing a narrative
+- Commits describe what changed, not how we got there
+- Sessions are ephemeral — no trace survives session end
+- Recovery from agent mistakes requires manual git surgery
+- New sessions start cold — same friction recurs across sessions
 
 ## Goals & Non-Goals
 
 ### Goals
-- REQ-GOAL-001: Reduce false timeout rate for Gemini and OpenAI from ~50% to under 5%
-  by raising per-provider ceilings to 30 minutes.
-- REQ-GOAL-002: Detect stuck/zombie Gemini tasks early via SSE event staleness rather
-  than waiting the full timeout.
-- REQ-GOAL-003: Provide clear, non-obtrusive elapsed-time progress to the user during
-  long-running research — including Gemini thinking summaries showing what it is doing.
+- REQ-GOAL-001: Every session leaves a persistent trace (event log + summary)
+- REQ-GOAL-002: Mid-session recovery in seconds via named checkpoints
+- REQ-GOAL-003: Commits narrate engineering journey (approaches, friction, alternatives)
+- REQ-GOAL-004: Hooks provide contextual guidance based on session trajectory
+- REQ-GOAL-005: System learns across sessions (friction patterns surfaced proactively)
 
 ### Non-Goals
-- REQ-NOGO-001: Changing Perplexity's timeout — 300s synchronous ceiling is appropriate.
-- REQ-NOGO-002: Per-provider timeout overrides via CLI flags or env vars — premature
-  optimization, hardcoded values are correct for v1.
-- REQ-NOGO-003: OpenAI reasoning summaries during polling — OpenAI only provides these
-  after completion, not during. No streaming equivalent exists for their deep research.
+- REQ-NOGO-001: External logging service integration — local files only
+- REQ-NOGO-002: Real-time dashboard — event log is for post-hoc analysis and agent use
+- REQ-NOGO-003: Modifying the trace protocol — session events complement traces, not replace
 
 ## Requirements
 
 ### Must-Have (P0)
 
-- REQ-P0-001: Gemini polling timeout raised to 30-minute ceiling.
-  Acceptance: Given a Gemini request taking 25 minutes, When the polling/streaming loop
-  runs, Then it continues without timing out.
+- REQ-P0-001: `.session-events.jsonl` written atomically during sessions with structured events.
+  Acceptance: After any session with tool calls, `.session-events.jsonl` exists with valid JSONL.
 
-- REQ-P0-002: OpenAI polling timeout raised to 30-minute ceiling.
-  Acceptance: Given an OpenAI request taking 25 minutes, When the polling loop runs,
-  Then it continues without timing out.
+- REQ-P0-002: `get_session_trajectory()` returns accurate session aggregates.
+  Acceptance: Returns correct TRAJ_TOOL_CALLS, TRAJ_FILES_MODIFIED, TRAJ_GATE_BLOCKS counts.
 
-- REQ-P0-003: OpenAI handles `incomplete` and `cancelled` as terminal error states.
-  Acceptance: Given an OpenAI response with status `incomplete`, When poll reads it,
-  Then it raises HTTPError with a descriptive message instead of continuing to poll.
+- REQ-P0-003: Session events archived to `~/.claude/sessions/<project>/` on session end.
+  Acceptance: After session ends, archived JSONL exists in sessions directory.
 
-- REQ-P0-004: Gemini handles `cancelled`/`CANCELLED` as terminal error states.
-  Acceptance: Given a Gemini response with status `CANCELLED`, When poll reads it,
-  Then it raises HTTPError with a descriptive message.
+- REQ-P0-004: `refs/checkpoints/<branch>/N` created via git plumbing on Write/Edit.
+  Acceptance: Checkpoint refs exist after implementer session with 5+ tool calls.
 
-- REQ-P0-005: SKILL.md Bash timeout bumped to accommodate 30-minute provider ceilings.
-  Acceptance: SKILL.md `timeout:` value is at least max_provider_ceiling + 120s buffer
-  (i.e., >= 1920000ms).
+- REQ-P0-005: `/rewind` skill restores to a named checkpoint.
+  Acceptance: After rewind, working tree matches checkpoint state.
 
-- REQ-P0-006: Orchestrator `--timeout` default and `as_completed` buffer aligned.
-  Acceptance: `--timeout` default >= 1800s; `as_completed` timeout = args.timeout + 120.
+- REQ-P0-006: Guardian includes `--- Session Context ---` block in non-trivial commits.
+  Acceptance: Commits with >5 tool calls include the session context block.
 
-- REQ-P0-007: All 7 existing tests in `test_warnings.py` continue to pass.
-  Acceptance: `python3 -m pytest skills/deep-research/tests/test_warnings.py` reports 7
-  passed, 0 failed.
+- REQ-P0-007: test-gate provides trajectory-based guidance on strike 2+.
+  Acceptance: When same assertion fails 3x, guidance mentions the specific assertion and files.
 
-- REQ-P0-008: Progress output includes elapsed wall-clock time for all providers.
-  Acceptance: stderr output during polling includes format
-  `[PROVIDER] Status: {status} ({Nm Ns}, poll {n})` for OpenAI, and event-driven
-  progress for Gemini.
+- REQ-P0-008: Prior session friction injected at session start.
+  Acceptance: After 3+ sessions, session-init mentions recurring friction patterns.
 
 ### Nice-to-Have (P1)
 
-- REQ-P1-001: Adaptive poll intervals for OpenAI (5s early, 15s mid, 30s late).
-- REQ-P1-002: Gemini streaming with `thinking_summaries` replacing blind polling.
-  Output: compact stderr lines like `[Gemini] 2m 30s - Searching: "topic keyword"`.
-- REQ-P1-003: Zombie detection for Gemini via SSE event staleness (5 min with no events
-  = appears stuck).
-- REQ-P1-004: SSE parsing capability in `http.py` for stdlib-only chunked reading.
-
-### Future Consideration (P2)
-
-- REQ-P2-001: Per-provider timeout overrides via CLI flags or env vars.
-- REQ-P2-002: Reconnection support for Gemini SSE via `last_event_id`.
+- REQ-P1-001: Session retrospective written as human-readable summary.
+- REQ-P1-002: Checkpoint frequency auto-tuned (more frequent near test failures).
+- REQ-P1-003: Cross-session friction pattern detection (same assertion failing across sessions).
 
 ## Definition of Done
 
-All P0 requirements satisfied. At least REQ-P1-001, REQ-P1-002, REQ-P1-003, and
-REQ-P1-004 satisfied. All tests pass (existing + new). SKILL.md updated. Issue #48
-closed.
+All P0 requirements satisfied. All existing hook tests continue to pass. Each phase
+independently valuable and mergeable. v2 retrospective completed after Phase 4.
 
 ## Architectural Decisions
 
-- DEC-TIMEOUT-001: Set both Gemini and OpenAI ceilings to 1800s (30 min).
-  Addresses: REQ-P0-001, REQ-P0-002.
-  Rationale: 30 min covers ~95% of observed query durations. Longer (45-60 min) would
-  cover more edge cases but makes the Bash timeout impractically long (40+ min waiting).
+- DEC-V2-001: Session events as JSONL append-only log.
+  Addresses: REQ-P0-001.
+  Rationale: JSONL is atomic (one write per line), grep-friendly, and doesn't require
+  parsing the entire file to append. Alternatives: SQLite (heavier, overkill for <1000
+  events/session), plain text (not structured enough for trajectory queries).
 
-- DEC-TIMEOUT-002: Replace Gemini blind polling with SSE streaming + thinking_summaries.
-  Addresses: REQ-P1-002, REQ-P1-003, REQ-P1-004.
-  Rationale: Gemini's Interactions API supports `stream=True` alongside `background=True`.
-  SSE events include `thought_summary` deltas showing what the agent is doing. This
-  provides real-time progress (planning, searching, reading, synthesizing) instead of
-  opaque status polling. It also enables event-based zombie detection (no events for
-  5 min = stuck) which is more reliable than timestamp comparison.
+- DEC-V2-002: Git ref-based checkpoints via plumbing commands.
+  Addresses: REQ-P0-004, REQ-P0-005.
+  Rationale: Git refs are first-class, survive garbage collection when referenced, and
+  support random access without branch switching or stash pollution. Using write-tree +
+  commit-tree + update-ref avoids touching the working copy or staging area.
 
-- DEC-TIMEOUT-003: Three-tier adaptive intervals for OpenAI: 5s (0-2m), 15s (2-10m),
-  30s (10m+).
-  Addresses: REQ-P1-001.
-  Rationale: Early phase needs fast feedback to catch quick completions. Mid phase uses
-  current 10-15s cadence. Late phase reduces API calls for long-running queries. Three
-  discrete tiers are simple to reason about and test versus a continuous formula.
+- DEC-V2-003: Session archive indexed by project hash.
+  Addresses: REQ-P0-003, REQ-P0-008.
+  Rationale: Project paths contain spaces and special characters. A hash of the project
+  path provides a stable, filesystem-safe directory name. Index.jsonl per project enables
+  fast cross-session queries without reading every archived session.
 
-- DEC-TIMEOUT-004: `as_completed` buffer increased from 60s to 120s.
+- DEC-V2-004: Trajectory data as shell variables, not JSON.
+  Addresses: REQ-P0-002.
+  Rationale: Hooks are bash scripts. Shell variables (TRAJ_TOOL_CALLS=23) are faster to
+  produce and consume than JSON parsing via jq. The event log itself is JSON for structure;
+  the aggregates are shell variables for speed.
+
+- DEC-V2-005: Session context in commits as structured text block, not metadata.
   Addresses: REQ-P0-006.
-  Rationale: With 30-min provider ceilings, 60s buffer is too tight for network jitter.
-  120s provides margin without meaningfully extending the worst case.
+  Rationale: Git commit messages are the universal interface — every tool (GitHub, git log,
+  blame) displays them. Structured text (Key: value) is human-readable and grep-parseable.
+  Alternatives: git notes (not pushed by default, easily lost), trailers (limited to
+  single-line values).
 
-- DEC-TIMEOUT-005: SSE parsing as a new function in `http.py` using stdlib `urllib`.
-  Addresses: REQ-P1-004.
-  Rationale: The deep-research skill is stdlib-only (no `requests`, no `httpx`). SSE is
-  a simple line-based protocol (`data:`, `event:`, `id:` prefixes) that can be parsed
-  from a streaming `urllib.request.urlopen` response. A dedicated `stream_sse()` function
-  in `http.py` yields parsed events as dicts while the connection remains open.
+## Intent Statements
 
-- DEC-TIMEOUT-006: Gemini `_poll_response` replaced by `_stream_response` function.
-  Addresses: REQ-P1-002, REQ-P1-003.
-  Rationale: Streaming fundamentally changes how we wait for Gemini completion. Instead of
-  a poll loop hitting GET every 15s, we open a single SSE connection and receive events.
-  The `_poll_response` function is removed and replaced with `_stream_response` which uses
-  `http.stream_sse()`. Fallback: if streaming fails on connect, fall back to the original
-  polling approach (retained as `_poll_response_fallback`).
+- **INTENT-01**: Every session leaves a trace. Event log + summary persist in `~/.claude/sessions/`.
+- **INTENT-02**: Mid-session recovery takes seconds, not minutes. `/rewind` restores to checkpoint.
+- **INTENT-03**: Commits tell engineering stories. Non-trivial commits include session context.
+- **INTENT-04**: Hooks steer, not just block. Contextual guidance based on trajectory.
+- **INTENT-05**: System learns across sessions. Prior friction surfaced proactively.
 
-## Phase 1: Core Timeout Increases + Terminal States
+## Phase 0: Session Event Log (Foundation)
 **Status:** planned
-**Decision IDs:** DEC-TIMEOUT-001, DEC-TIMEOUT-004
-**Requirements:** REQ-P0-001, REQ-P0-002, REQ-P0-003, REQ-P0-004, REQ-P0-005, REQ-P0-006, REQ-P0-007, REQ-P0-008
-**Issues:** #49
+**Decision IDs:** DEC-V2-001, DEC-V2-003, DEC-V2-004
+**Requirements:** REQ-P0-001, REQ-P0-002, REQ-P0-003
+**Issues:** TBD
 **Definition of Done:**
-- REQ-P0-001 satisfied: Gemini MAX_POLL_ATTEMPTS supports 30-min ceiling
-- REQ-P0-002 satisfied: OpenAI MAX_POLL_ATTEMPTS supports 30-min ceiling
-- REQ-P0-003 satisfied: OpenAI _poll_response treats `incomplete`/`cancelled` as terminal
-- REQ-P0-004 satisfied: Gemini _poll_response treats `cancelled`/`CANCELLED` as terminal
-- REQ-P0-005 satisfied: SKILL.md timeout >= 1920000ms
-- REQ-P0-006 satisfied: --timeout default >= 1800, as_completed uses + 120
-- REQ-P0-007 satisfied: All 7 existing tests pass (with test_timeout_buffer updated)
-- REQ-P0-008 satisfied: stderr progress includes elapsed time format
-
-### Planned Decisions
-- DEC-TIMEOUT-001: Gemini `MAX_POLL_ATTEMPTS=120` (120 * 15s = 1800s), OpenAI
-  `MAX_POLL_ATTEMPTS=180` (180 * 10s = 1800s) — Addresses: REQ-P0-001, REQ-P0-002
-- DEC-TIMEOUT-004: `as_completed(futures, timeout=args.timeout + 120)` — Addresses:
-  REQ-P0-006
+- REQ-P0-001 satisfied: `.session-events.jsonl` written with structured events
+- REQ-P0-002 satisfied: `get_session_trajectory()` returns accurate aggregates
+- REQ-P0-003 satisfied: Events archived to `~/.claude/sessions/<project>/` on session end
 
 ### File Changes
 
 | File | Change |
 |------|--------|
-| `skills/deep-research/scripts/lib/gemini_dr.py` | `MAX_POLL_ATTEMPTS=120`; add `cancelled`/`CANCELLED` to terminal states; add elapsed time to stderr progress |
-| `skills/deep-research/scripts/lib/openai_dr.py` | `MAX_POLL_ATTEMPTS=180`; add `incomplete`/`cancelled` to terminal states; add elapsed time to stderr progress |
-| `skills/deep-research/scripts/deep_research.py` | `--timeout` default to 1800; `as_completed` buffer to `+ 120` |
-| `skills/deep-research/SKILL.md` | Bash `timeout:` to 1920000ms; update timeout default reference text |
-| `skills/deep-research/tests/test_warnings.py` | Update `test_timeout_buffer` to match `+ 120`; add test for terminal state constants |
+| `hooks/context-lib.sh` | Add `append_session_event()`, `get_session_trajectory()`, `get_session_summary_context()` (~80 lines) |
+| `hooks/track.sh` | Call `append_session_event "write"` after tracking file change (~3 lines) |
+| `hooks/guard.sh` | Log gate evaluations via `append_session_event "gate_eval"` (~10 lines) |
+| `hooks/session-init.sh` | Initialize `.session-events.jsonl` with `session_start` event (~5 lines) |
+| `hooks/session-end.sh` | Archive event log to `~/.claude/sessions/`, add to cleanup (~15 lines) |
 
 ### Test Plan
-- Existing 7 tests pass (with `test_timeout_buffer` updated for `+ 120`)
-- New test: verify `incomplete`/`cancelled` strings appear in openai_dr.py source
-- New test: verify `cancelled`/`CANCELLED` strings appear in gemini_dr.py source
-- New test: verify MAX_POLL_ATTEMPTS values in source match expected ceilings
+- Write events, read back, verify JSONL format
+- `get_session_trajectory()` returns correct aggregates from sample event log
+- Session archive created in correct directory with correct content
 
 ### Decision Log
 <!-- Guardian appends here after phase completion -->
 
 
-## Phase 2: OpenAI Adaptive Poll Intervals
+## Phase 1: Checkpoints & Rewind
 **Status:** planned
-**Decision IDs:** DEC-TIMEOUT-003
-**Requirements:** REQ-P1-001
-**Issues:** #50
+**Decision IDs:** DEC-V2-002
+**Requirements:** REQ-P0-004, REQ-P0-005
+**Issues:** TBD
 **Definition of Done:**
-- REQ-P1-001 satisfied: OpenAI uses 5s intervals for 0-120s, 15s for 120-600s, 30s for 600s+
-
-### Planned Decisions
-- DEC-TIMEOUT-003: Three-tier adaptive intervals. Replace attempt-count loop with
-  elapsed-time loop (`while elapsed < MAX_TIMEOUT_SECONDS`) — Addresses: REQ-P1-001
+- REQ-P0-004 satisfied: Checkpoint refs created at correct frequency
+- REQ-P0-005 satisfied: `/rewind` restores working tree to checkpoint state
 
 ### File Changes
 
 | File | Change |
 |------|--------|
-| `skills/deep-research/scripts/lib/openai_dr.py` | Replace `MAX_POLL_ATTEMPTS` / fixed `POLL_INTERVAL` with `MAX_POLL_SECONDS = 1800` and `_get_poll_interval(elapsed)` function. Refactor `_poll_response` to use `while elapsed < MAX_POLL_SECONDS` loop. |
-| `skills/deep-research/tests/test_warnings.py` | Add tests for `_get_poll_interval()` at boundary times (0s, 120s, 600s). Update any source-matching tests if constants changed. |
+| `hooks/checkpoint.sh` | **New** — PreToolUse hook for Write/Edit, creates git ref checkpoints (~60 lines) |
+| `skills/rewind.md` | **New** — Skill listing + restoring checkpoints (~30 lines) |
+| `hooks/subagent-start.sh` | Reset `.checkpoint-counter` on implementer start (~5 lines) |
+| `settings.json` | Register `checkpoint.sh` in PreToolUse Write/Edit matcher |
+| `agents/guardian.md` | Add checkpoint ref cleanup to merge protocol (~5 lines) |
 
 ### Test Plan
-- `_get_poll_interval(0)` returns 5
-- `_get_poll_interval(60)` returns 5
-- `_get_poll_interval(120)` returns 15
-- `_get_poll_interval(300)` returns 15
-- `_get_poll_interval(600)` returns 30
-- `_get_poll_interval(1200)` returns 30
-- Total coverage: verify that adaptive loop with these intervals can reach 1800s
+- Checkpoint ref created after threshold tool calls
+- Multiple checkpoints have sequential numbering
+- `/rewind` lists checkpoints with timestamps
+- `/rewind` restores correct file state
+- Checkpoints cleaned up after merge
 
 ### Decision Log
 <!-- Guardian appends here after phase completion -->
 
 
-## Phase 3: Gemini SSE Streaming with Thinking Summaries
+## Phase 2: Session Summaries in Commits
 **Status:** planned
-**Decision IDs:** DEC-TIMEOUT-002, DEC-TIMEOUT-005, DEC-TIMEOUT-006
-**Requirements:** REQ-P1-002, REQ-P1-003, REQ-P1-004
-**Issues:** #52
+**Decision IDs:** DEC-V2-005
+**Requirements:** REQ-P0-006
+**Issues:** TBD
 **Definition of Done:**
-- REQ-P1-002 satisfied: Gemini shows compact stderr lines with thinking summaries
-  (e.g., `[Gemini] 2m 30s - Searching: "topic"`)
-- REQ-P1-003 satisfied: If no SSE events arrive for 300s, raise "appears stuck" error
-- REQ-P1-004 satisfied: `http.py` has `stream_sse()` generator function
-
-### Planned Decisions
-- DEC-TIMEOUT-005: New `stream_sse(url, headers, timeout)` generator in `http.py` that
-  yields `{"event": str, "data": str, "id": str}` dicts. Uses
-  `urllib.request.urlopen()` with chunked line reading. SSE protocol:
-  lines starting with `data:` contain JSON payload, `event:` is the event type,
-  `id:` is the event ID, blank lines delimit events. — Addresses: REQ-P1-004
-
-- DEC-TIMEOUT-006: New `_stream_response(api_key, interaction_id)` in `gemini_dr.py`
-  replaces `_poll_response`. Opens SSE connection to
-  `GET /v1beta/interactions/{id}?stream=true`. Processes events:
-  - `interaction.start` → log start
-  - `content.delta` with `thought_summary` type → display on stderr as
-    `[Gemini] {elapsed} - {summary_text}`
-  - `content.delta` with other types → accumulate content
-  - `interaction.complete` → return accumulated content
-  - `error` → raise HTTPError
-  Zombie detection: track `last_event_time = time.time()` on each event. If
-  `time.time() - last_event_time > 300` (5 min), raise "appears stuck".
-  Fallback: if SSE connection fails, fall back to polling via retained
-  `_poll_response_fallback`. — Addresses: REQ-P1-002, REQ-P1-003
-
-- DEC-TIMEOUT-002: Submit request with `stream=True` and
-  `agent_config={"thinking_summaries": "auto"}` alongside existing `background=True`.
-  — Addresses: REQ-P1-002
+- REQ-P0-006 satisfied: Non-trivial commits include `--- Session Context ---` block
 
 ### File Changes
 
 | File | Change |
 |------|--------|
-| `skills/deep-research/scripts/lib/http.py` | Add `stream_sse(url, headers, timeout)` generator function. Parses SSE line protocol from chunked urllib response. |
-| `skills/deep-research/scripts/lib/gemini_dr.py` | (1) Add `stream=True` and `agent_config={"thinking_summaries": "auto"}` to `_submit_request` payload. (2) Rename `_poll_response` to `_poll_response_fallback`. (3) Add `_stream_response(api_key, interaction_id)` using `http.stream_sse()`. (4) Update `research()` to try streaming first, fall back to polling. (5) Zombie detection: 300s event staleness threshold. (6) Replace `MAX_POLL_ATTEMPTS` with `MAX_TIMEOUT_SECONDS = 1800`. |
-| `skills/deep-research/tests/test_gemini_stream.py` | New test file. Tests for SSE event parsing logic, zombie detection threshold, thinking summary formatting, fallback trigger conditions. Real object tests, no mocks. |
-
-### SSE Event Flow (from research)
-
-```
-event: interaction.start
-data: {"interaction_id": "abc123", "status": "processing"}
-
-event: content.start
-data: {"content_type": "thought_summary"}
-
-event: content.delta
-data: {"type": "thought_summary", "text": "Planning research approach..."}
-
-event: content.delta
-data: {"type": "thought_summary", "text": "Searching: \"quantum computing error correction\""}
-
-event: content.delta
-data: {"type": "text", "text": "# Research Report\n\n..."}
-
-event: content.stop
-data: {}
-
-event: interaction.complete
-data: {"status": "completed"}
-```
-
-### Stderr Output Format
-
-Non-obtrusive, compact, showing what Gemini is doing:
-```
-  [Gemini] 0m 05s - Starting research...
-  [Gemini] 0m 30s - Planning research approach
-  [Gemini] 1m 15s - Searching: "quantum computing error correction 2025"
-  [Gemini] 2m 30s - Reading 5 sources...
-  [Gemini] 5m 00s - Synthesizing findings...
-  [Gemini] 8m 22s - Complete (8m 22s)
-```
+| `agents/guardian.md` | Add session context protocol (~20 lines) |
+| `hooks/subagent-start.sh` | Inject session summary when spawning Guardian (~15 lines) |
+| `hooks/context-lib.sh` | Add `get_session_summary_context()` (~40 lines) |
 
 ### Test Plan
-- SSE line parser: given raw SSE text, verify parsed event dicts
-- Zombie detection: given `last_event_time` 301s ago, verify "appears stuck" error raised
-- Zombie detection: given `last_event_time` 299s ago, verify no error
-- Thinking summary formatting: given event data, verify stderr format matches pattern
-- Fallback trigger: given SSE connection error, verify `_poll_response_fallback` is called
-- Content accumulation: given sequence of content.delta events, verify full report extracted
-
-### Risks and Mitigations
-
-| Risk | Impact | Mitigation |
-|------|--------|------------|
-| Gemini SSE endpoint format differs from research findings | Streaming fails, no progress | Fallback to polling (`_poll_response_fallback`) is retained. Streaming is best-effort. |
-| `urllib` chunked reading blocks indefinitely on slow connections | Thread hangs | Set socket-level timeout; zombie detection also covers this via elapsed-time ceiling. |
-| `thinking_summaries` field not present in all interaction types | No progress lines, just silence | Check for `thought_summary` type before displaying; if absent, show generic "Processing..." at intervals. |
+- `get_session_summary_context()` produces structured text from sample events
+- Non-trivial session (>5 tool calls) generates context block
+- Trivial session (<5 tool calls) omits context block
 
 ### Decision Log
 <!-- Guardian appends here after phase completion -->
 
 
-## Phase 4: Integration Testing + Fixture Updates
+## Phase 3: Session-Aware Hooks
 **Status:** planned
-**Decision IDs:** (none — validation phase)
-**Requirements:** REQ-P0-007 (re-verify), all P0 and P1
-**Issues:** #55
+**Decision IDs:** (trajectory analysis additions)
+**Requirements:** REQ-P0-007
+**Issues:** TBD
 **Definition of Done:**
-- All tests pass: existing + new from Phases 1-3
-- Mock mode (`--mock`) works with updated fixtures
-- `SKILL.md` instructions are consistent with actual behavior
+- REQ-P0-007 satisfied: test-gate provides trajectory-based guidance on strike 2+
 
 ### File Changes
 
 | File | Change |
 |------|--------|
-| `skills/deep-research/fixtures/gemini_sample.json` | Update model name if changed; verify fixture works with new code path |
-| `skills/deep-research/tests/test_warnings.py` | Final pass: ensure all source-matching tests reflect final constant values |
-| `skills/deep-research/SKILL.md` | Review: timeout values, progress output description, any new options |
+| `hooks/context-lib.sh` | Add `detect_approach_pivots()` (~30 lines) |
+| `hooks/test-gate.sh` | Trajectory-aware guidance on strike 2+ (~30 lines replacement) |
+| `hooks/session-summary.sh` | Structured retrospective with trajectory data (~40 lines) |
 
 ### Test Plan
-- Full test suite: `python3 -m pytest skills/deep-research/tests/ -v`
-- Mock mode end-to-end: `python3 deep_research.py "test topic" --mock --emit=compact`
-- Verify stderr output format matches documented format in SKILL.md
+- `detect_approach_pivots()` finds repeated edit+fail patterns in sample events
+- test-gate on strike 2+ with event log mentions specific assertion and files
+- test-gate without event log falls back to current behavior
+- Session summary includes trajectory narrative
 
 ### Decision Log
 <!-- Guardian appends here after phase completion -->
 
 
-## References
+## Phase 4: Cross-Session Learning
+**Status:** planned
+**Decision IDs:** DEC-V2-003
+**Requirements:** REQ-P0-008
+**Issues:** TBD
+**Definition of Done:**
+- REQ-P0-008 satisfied: Prior session friction injected at session start after 3+ sessions
 
-### APIs
-- Gemini Interactions API: `https://generativelanguage.googleapis.com/v1beta/interactions`
-- OpenAI Responses API: `https://api.openai.com/v1/responses`
-- Perplexity Chat Completions: `https://api.perplexity.ai/chat/completions`
+### File Changes
 
-### SSE Protocol
-- Gemini streaming: `stream=True` + `background=True` in POST payload
-- Thinking summaries: `agent_config={"thinking_summaries": "auto"}`
-- SSE events: `interaction.start`, `content.start`, `content.delta`, `content.stop`,
-  `interaction.complete`, `error`
-- Reconnection: `last_event_id` header support (P2)
+| File | Change |
+|------|--------|
+| `hooks/session-end.sh` | Write session index entry to `~/.claude/sessions/<project>/index.jsonl` (~20 lines) |
+| `hooks/session-init.sh` | Read + inject prior session context and friction patterns (~25 lines) |
+| `hooks/context-lib.sh` | Add `get_prior_sessions()` (~30 lines) |
 
-### Local Files
-- Provider clients: `skills/deep-research/scripts/lib/{gemini,openai,perplexity}_dr.py`
-- HTTP utilities: `skills/deep-research/scripts/lib/http.py`
-- Orchestrator: `skills/deep-research/scripts/deep_research.py`
-- Renderer: `skills/deep-research/scripts/lib/render.py`
-- Skill definition: `skills/deep-research/SKILL.md`
-- Tests: `skills/deep-research/tests/test_warnings.py`
-- Fixtures: `skills/deep-research/fixtures/`
+### Test Plan
+- Session index entry written with correct schema
+- Index trimmed to last 20 entries
+- `get_prior_sessions()` returns recent summaries and friction patterns
+- session-init injects prior session context when index exists
+- Friction patterns detected from recurring entries across sessions
 
-### Research
-- Issue #48 contains research findings on typical query durations, API capabilities,
-  and community reports on timeout behavior.
+### Decision Log
+<!-- Guardian appends here after phase completion -->
+
+
+## Event Log Schema
+
+```jsonl
+{"ts":"ISO8601","event":"session_start","project":"name","branch":"branch"}
+{"ts":"ISO8601","event":"write","file":"path","lines_changed":N}
+{"ts":"ISO8601","event":"checkpoint","ref":"refs/checkpoints/branch/N","trigger":"reason"}
+{"ts":"ISO8601","event":"test_run","result":"pass|fail","failures":N,"assertion":"name"}
+{"ts":"ISO8601","event":"gate_eval","hook":"name","result":"allow|block","reason":"text"}
+{"ts":"ISO8601","event":"agent_start","type":"agent_type","trace_id":"id"}
+{"ts":"ISO8601","event":"agent_stop","type":"agent_type","duration_min":N,"pivots":N}
+{"ts":"ISO8601","event":"commit","sha":"hash","message":"text"}
+```
+
+## Session Summary Schema (index.jsonl)
+
+```json
+{
+  "id": "session-id",
+  "project": "name",
+  "started": "ISO8601",
+  "duration_min": N,
+  "agents": ["type1", "type2"],
+  "files_touched": ["path1", "path2"],
+  "tool_calls": N,
+  "checkpoints": N,
+  "rewinds": N,
+  "pivots": N,
+  "friction": ["description1"],
+  "outcome": "committed|tests-passing|tests-failing",
+  "summary": "narrative text"
+}
+```
 
 ## Worktree Strategy
 
-Main is sacred. All work happens in this worktree:
-- **Path:** `~/.claude/worktrees/fix-deep-research-timeouts`
-- **Branch:** `fix/deep-research-timeouts`
-- **Base:** `main` at `1a24cb4`
+Main is sacred. Each phase works in its own worktree:
+- **Phase 0:** `~/.claude/.worktrees/v2-phase-0` on branch `feature/v2-phase-0`
+- **Phases 1-4:** Sequential worktrees after Phase 0 merges
 
-Implementation order: Phase 1 (blocking P0) -> Phase 2 (OpenAI polish) -> Phase 3
-(Gemini streaming, most complex) -> Phase 4 (integration validation). Phases 1 and 2
-can be committed independently. Phase 3 is the largest change and should be a single
-commit. Phase 4 is a validation pass.
+Implementation order: Phase 0 (foundation, must be first) -> Phase 1 (checkpoints) ->
+Phase 2 (commit context) -> Phase 3 (smart hooks) -> Phase 4 (cross-session).
+Each phase is independently valuable and mergeable.
+
+## References
+
+### New State Files
+| File | Scope | Written By | Read By |
+|------|-------|-----------|---------|
+| `.session-events.jsonl` | Session | track.sh, guard.sh, checkpoint.sh | context-lib.sh, session-summary.sh |
+| `~/.claude/sessions/<project>/<session>.jsonl` | Persistent | session-end.sh | session-init.sh |
+| `~/.claude/sessions/<project>/index.jsonl` | Persistent | session-end.sh | session-init.sh |
+| `refs/checkpoints/<branch>/N` | Branch-scoped | checkpoint.sh | /rewind, Guardian |
