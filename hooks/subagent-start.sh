@@ -54,6 +54,15 @@ else
 fi
 CONTEXT_PARTS+=("$CTX_LINE")
 
+# --- Inject project architecture from MASTER_PLAN.md preamble ---
+if [[ -f "$PROJECT_ROOT/MASTER_PLAN.md" ]]; then
+    ARCH_SECTION=$(awk '/^### Architecture/{found=1; next} /^###|^## |^---/{if(found) exit} found{print}' "$PROJECT_ROOT/MASTER_PLAN.md" | head -15)
+    if [[ -n "$ARCH_SECTION" ]]; then
+        CONTEXT_PARTS+=("Project architecture:")
+        CONTEXT_PARTS+=("$ARCH_SECTION")
+    fi
+fi
+
 # --- Agent-type-specific context ---
 case "$AGENT_TYPE" in
     planner|Plan)

@@ -1,4 +1,23 @@
-# MASTER_PLAN: Fix Deep Research Provider Timeouts
+# MASTER_PLAN: Claude Code Configuration System
+
+## Project Overview
+**Type:** meta-infrastructure (hooks, agents, skills, commands)
+**Languages:** bash (78%), markdown (15%), python (7%)
+**Root:** /Users/turla/.claude
+
+### Architecture
+  hooks/     — 28 lifecycle hooks (session, tool-use, subagent, stop)
+  agents/    — 4 agent prompts (planner, implementer, tester, guardian)
+  skills/    — 8 skills (deep-research, decide, consume-content, ...)
+  commands/  — 6 slash commands (backlog, compact, ...)
+  scripts/   — Utility scripts (todo, update-check, batch-fetch)
+  traces/    — Agent trace protocol (52 indexed traces)
+  tests/     — Hook validation suite (121 tests)
+
+### Active Work
+  feat/trace-surfacing (worktree) — Trace digest + crash injection [ready to merge]
+
+---
 
 ## Original Intent
 

@@ -61,6 +61,14 @@ if [[ -f "$UPDATE_STATUS_FILE" && -s "$UPDATE_STATUS_FILE" ]]; then
     rm -f "$UPDATE_STATUS_FILE"
 fi
 
+# --- MASTER_PLAN.md preamble: project identity ---
+if [[ -f "$PROJECT_ROOT/MASTER_PLAN.md" ]]; then
+    PREAMBLE=$(awk '/^---$|^## Original Intent/{exit} {print}' "$PROJECT_ROOT/MASTER_PLAN.md" | head -30)
+    if [[ -n "$PREAMBLE" ]]; then
+        CONTEXT_PARTS+=("$PREAMBLE")
+    fi
+fi
+
 # --- MASTER_PLAN.md ---
 get_plan_status "$PROJECT_ROOT"
 write_statusline_cache "$PROJECT_ROOT"
