@@ -121,15 +121,60 @@ fi
 # compact-preserve.sh writes .preserved-context before compaction.
 # Re-inject it here so the post-compaction session has full context
 # even if the additionalContext from PreCompact was lost in summarization.
+#
+# Resume directive logic: the preserved-context file may contain a
+# "RESUME DIRECTIVE:" block (computed by build_resume_directive in context-lib.sh).
+# This block is extracted and injected as the FIRST context element so it takes
+# priority over all other context. The remainder is injected after.
+_WAS_COMPACTION=false
 PRESERVE_FILE="${CLAUDE_DIR}/.preserved-context"
 if [[ -f "$PRESERVE_FILE" && -s "$PRESERVE_FILE" ]]; then
+    _WAS_COMPACTION=true
+
+    # Extract resume directive block (lines starting with "RESUME DIRECTIVE:" and
+    # following indented lines that are part of the same block).
+    RESUME_BLOCK=""
+    _in_resume=false
+    while IFS= read -r line; do
+        # Skip file-level header comments
+        [[ "$line" =~ ^#.* ]] && continue
+        if [[ "$line" =~ ^RESUME\ DIRECTIVE: ]]; then
+            _in_resume=true
+            RESUME_BLOCK="${line}"
+        elif [[ "$_in_resume" == "true" && "$line" =~ ^[[:space:]] ]]; then
+            RESUME_BLOCK="${RESUME_BLOCK}
+${line}"
+        elif [[ "$_in_resume" == "true" ]]; then
+            _in_resume=false
+        fi
+    done < "$PRESERVE_FILE"
+
+    # Inject resume directive as first element (highest priority)
+    if [[ -n "$RESUME_BLOCK" ]]; then
+        # Prepend before all other CONTEXT_PARTS by building a new array
+        PRIORITY_CONTEXT=("ACTION REQUIRED — session resumed after compaction. ${RESUME_BLOCK}")
+        CONTEXT_PARTS=("${PRIORITY_CONTEXT[@]}" "${CONTEXT_PARTS[@]}")
+    fi
+
+    # Inject remaining metadata (everything except header comments and resume block)
+    _in_resume=false
+    _saw_resume=false
     CONTEXT_PARTS+=("Preserved context from before compaction:")
     while IFS= read -r line; do
-        # Skip the header comment
         [[ "$line" =~ ^#.* ]] && continue
         [[ -z "$line" ]] && continue
+        if [[ "$line" =~ ^RESUME\ DIRECTIVE: ]]; then
+            _saw_resume=true
+            _in_resume=true
+            continue
+        elif [[ "$_in_resume" == "true" && "$line" =~ ^[[:space:]] ]]; then
+            continue  # skip indented resume block lines
+        else
+            _in_resume=false
+        fi
         CONTEXT_PARTS+=("  $line")
     done < "$PRESERVE_FILE"
+
     # One-time use: remove after injecting so it doesn't persist across sessions
     rm -f "$PRESERVE_FILE"
 fi
@@ -227,8 +272,12 @@ if [[ -f "$TEST_STATUS" ]]; then
 fi
 
 # --- Initialize session event log ---
+# After compaction, preserve the event log — the trajectory is still relevant
+# context for the resumed session. Only reset for fresh sessions (/clear, startup).
 SESSION_EVENT_FILE="${CLAUDE_DIR}/.session-events.jsonl"
-rm -f "$SESSION_EVENT_FILE"  # Fresh log each session
+if [[ "${_WAS_COMPACTION:-false}" != "true" ]]; then
+    rm -f "$SESSION_EVENT_FILE"  # Fresh log each non-compaction session
+fi
 append_session_event "session_start" "{\"project\":\"$(basename "$PROJECT_ROOT")\",\"branch\":\"${GIT_BRANCH:-unknown}\"}" "$PROJECT_ROOT"
 
 # --- Output as additionalContext ---

@@ -781,6 +781,130 @@ get_session_summary_context() {
     echo "$summary"
 }
 
+# --- Resume directive builder ---
+# @decision DEC-RESUME-001
+# @title Compute actionable resume directive from session state in bash
+# @status accepted
+# @rationale After context compaction, the model loses track of what it was doing.
+# Computing the directive in bash (not relying on the model to remember) is the only
+# reliable way to survive compaction. Priority ladder: active agents > proof status >
+# test failures > git branch state > plan fallback. Sets RESUME_DIRECTIVE and
+# RESUME_FILES globals.
+build_resume_directive() {
+    local project_root="${1:-}"
+    if [[ -z "$project_root" ]]; then
+        project_root=$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")
+    fi
+
+    RESUME_DIRECTIVE=""
+    RESUME_FILES=""
+
+    local claude_dir="$project_root/.claude"
+
+    # --- Priority 1: Active agent in progress ---
+    local tracker="$claude_dir/.subagent-tracker"
+    if [[ -f "$tracker" ]]; then
+        local active_count
+        active_count=$(grep -c '^ACTIVE|' "$tracker" 2>/dev/null) || active_count=0
+        if [[ "$active_count" -gt 0 ]]; then
+            local active_type
+            active_type=$(grep '^ACTIVE|' "$tracker" | head -1 | cut -d'|' -f2)
+            local trace_path=""
+            # Find the most recent active trace for this agent type
+            for marker in "${TRACE_STORE:-$HOME/.claude/traces}"/.active-"${active_type}"-*; do
+                [[ -f "$marker" ]] || continue
+                trace_path="~/.claude/traces/$(cat "$marker" 2>/dev/null)"
+                break
+            done
+            local directive_body="An ${active_type} agent was in progress. Resume or re-dispatch."
+            [[ -n "$trace_path" ]] && directive_body="$directive_body Trace: $trace_path"
+            RESUME_DIRECTIVE="$directive_body"
+        fi
+    fi
+
+    # --- Priority 2: Proof status signals ---
+    local proof_file="$claude_dir/.proof-status"
+    if [[ -z "$RESUME_DIRECTIVE" && -f "$proof_file" ]]; then
+        local proof_status
+        proof_status=$(cut -d'|' -f1 "$proof_file" 2>/dev/null || echo "")
+        if [[ "$proof_status" == "needs-verification" ]]; then
+            RESUME_DIRECTIVE="Implementation complete but unverified. Dispatch tester."
+        elif [[ "$proof_status" == "verified" ]]; then
+            # Verified + dirty = ready for Guardian
+            get_git_state "$project_root"
+            if [[ "${GIT_DIRTY_COUNT:-0}" -gt 0 ]]; then
+                RESUME_DIRECTIVE="Verified implementation ready. Dispatch Guardian to commit."
+            fi
+        fi
+    fi
+
+    # --- Priority 3: Tests failing ---
+    if [[ -z "$RESUME_DIRECTIVE" ]]; then
+        if read_test_status "$project_root"; then
+            if [[ "${TEST_RESULT:-}" == "fail" ]]; then
+                RESUME_DIRECTIVE="Tests failing (${TEST_FAILS:-?} failures). Fix tests before proceeding."
+            fi
+        fi
+    fi
+
+    # --- Priority 4: On feature branch with dirty files ---
+    if [[ -z "$RESUME_DIRECTIVE" ]]; then
+        get_git_state "$project_root"
+        if [[ -n "${GIT_BRANCH:-}" && "$GIT_BRANCH" != "main" && "$GIT_BRANCH" != "master" && "${GIT_DIRTY_COUNT:-0}" -gt 0 ]]; then
+            RESUME_DIRECTIVE="Implementation in progress on ${GIT_BRANCH}. Continue editing."
+        fi
+    fi
+
+    # --- Priority 5: On main with worktrees ---
+    if [[ -z "$RESUME_DIRECTIVE" ]]; then
+        get_git_state "$project_root"
+        if [[ ("${GIT_BRANCH:-}" == "main" || "${GIT_BRANCH:-}" == "master") && "${GIT_WT_COUNT:-0}" -gt 0 ]]; then
+            RESUME_DIRECTIVE="Work in worktrees. Check active worktree branches."
+        fi
+    fi
+
+    # --- Fallback: Plan status ---
+    if [[ -z "$RESUME_DIRECTIVE" ]]; then
+        get_plan_status "$project_root"
+        if [[ "$PLAN_EXISTS" == "true" && "$PLAN_LIFECYCLE" == "active" ]]; then
+            local phase_num=$(( PLAN_COMPLETED_PHASES + PLAN_IN_PROGRESS_PHASES ))
+            [[ "$phase_num" -eq 0 ]] && phase_num=1
+            RESUME_DIRECTIVE="Working on Phase ${phase_num}/${PLAN_TOTAL_PHASES}. Check plan for next steps."
+        fi
+    fi
+
+    # --- Compute top modified files ---
+    if [[ -n "$RESUME_DIRECTIVE" ]]; then
+        get_session_trajectory "$project_root"
+        local event_file="$project_root/.claude/.session-events.jsonl"
+        if [[ -f "$event_file" ]]; then
+            RESUME_FILES=$(grep '"event":"write"' "$event_file" 2>/dev/null \
+                | jq -r '.file // empty' 2>/dev/null \
+                | while IFS= read -r f; do echo "$(stat -f '%m' "$f" 2>/dev/null || stat -c '%Y' "$f" 2>/dev/null || echo 0) $f"; done \
+                | sort -rn \
+                | head -3 \
+                | awk '{print $2}' \
+                | xargs -I{} basename {} 2>/dev/null \
+                | paste -sd', ' - 2>/dev/null || echo "")
+        fi
+
+        # Get trajectory one-liner for the session field
+        local traj_oneliner
+        traj_oneliner=$(get_session_summary_context "$project_root" 2>/dev/null || echo "")
+
+        # Format the multi-line directive block
+        local formatted="RESUME DIRECTIVE: ${RESUME_DIRECTIVE}"
+        [[ -n "$RESUME_FILES" ]] && formatted="${formatted}
+  Active work: ${RESUME_FILES}"
+        [[ -n "$traj_oneliner" ]] && formatted="${formatted}
+  Session: ${traj_oneliner}"
+        formatted="${formatted}
+  Next action: ${RESUME_DIRECTIVE}"
+
+        RESUME_DIRECTIVE="$formatted"
+    fi
+}
+
 # Export for subshells
 export TRACE_STORE SOURCE_EXTENSIONS DECISION_LINE_THRESHOLD TEST_STALENESS_THRESHOLD SESSION_STALENESS_THRESHOLD
-export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path is_test_file read_test_status append_audit write_statusline_cache track_subagent_start track_subagent_stop get_subagent_status safe_cleanup archive_plan init_trace detect_active_trace finalize_trace index_trace is_claude_meta_repo append_session_event get_session_trajectory get_session_summary_context
+export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path is_test_file read_test_status append_audit write_statusline_cache track_subagent_start track_subagent_stop get_subagent_status safe_cleanup archive_plan init_trace detect_active_trace finalize_trace index_trace is_claude_meta_repo append_session_event get_session_trajectory get_session_summary_context build_resume_directive
