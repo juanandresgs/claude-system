@@ -121,6 +121,19 @@ if [[ -f "$AUDIT_LOG" && -s "$AUDIT_LOG" ]]; then
     done < <(tail -5 "$AUDIT_LOG")
 fi
 
+# --- Session trajectory ---
+TRAJ_SUMMARY=$(get_session_summary_context "$PROJECT_ROOT")
+if [[ -n "$TRAJ_SUMMARY" ]]; then
+    CONTEXT_PARTS+=("$TRAJ_SUMMARY")
+fi
+
+# --- Resume directive ---
+build_resume_directive "$PROJECT_ROOT"
+if [[ -n "$RESUME_DIRECTIVE" ]]; then
+    CONTEXT_PARTS+=("")
+    CONTEXT_PARTS+=("$RESUME_DIRECTIVE")
+fi
+
 # --- Write persistent file ---
 # This file survives compaction and is read by session-init.sh on the
 # SessionStart(compact) event. Belt-and-suspenders: even if the
@@ -145,7 +158,7 @@ fi
 # Includes both the project state AND a directive for Claude to generate
 # a structured context summary during compaction.
 if [[ ${#CONTEXT_PARTS[@]} -gt 0 ]]; then
-    DIRECTIVE="COMPACTION CONTEXT PRESERVATION: Before summarizing, generate a structured context summary following the context-preservation format: (1) Current Objective & Status — what is the goal, what is done, what is the immediate next step; (2) Active Context — absolute file paths being worked on, recent changes with function names; (3) Constraints & Decisions — user preferences, discarded approaches, architectural rules; (4) Continuity Handoff — 'When resuming, the first thing to do is...' with a specific actionable instruction. Include this summary in your compaction output so the next session can continue seamlessly."
+    DIRECTIVE="POST-COMPACTION: The RESUME DIRECTIVE below was computed from session state. Preserve it verbatim in the summary — it tells the next session what to do."
 
     CONTEXT=$(printf '%s\n' "${CONTEXT_PARTS[@]}")
     FULL_OUTPUT="${DIRECTIVE}
