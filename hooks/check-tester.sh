@@ -51,7 +51,7 @@ if [[ -f "$PROOF_FILE" ]]; then
     PROOF_STATUS=$(cut -d'|' -f1 "$PROOF_FILE")
 fi
 
-if [[ "$PROOF_STATUS" == "missing" ]]; then
+if [[ "$PROOF_STATUS" == "missing" && "$PROJECT_ROOT" != "$HOME/.claude" ]]; then
     ISSUES+=("Tester returned without writing .proof-status — verification evidence not collected")
 fi
 
@@ -99,6 +99,12 @@ if [[ ${#ISSUES[@]} -gt 0 ]]; then
     for issue in "${ISSUES[@]}"; do
         append_audit "$PROJECT_ROOT" "agent_tester" "$issue"
     done
+fi
+
+# Meta-repo exemption: .proof-status is never created for ~/.claude
+# (task-track.sh Gate C exempts meta-repos). Treat as pending for auto-verify.
+if [[ "$PROOF_STATUS" == "missing" && "$PROJECT_ROOT" == "$HOME/.claude" ]]; then
+    PROOF_STATUS="pending"
 fi
 
 # Decision gate based on proof status

@@ -1,6 +1,6 @@
 ---
 name: decide
-description: Generate an interactive decision configurator from research or plan analysis. Presents options as explorable cards with trade-offs, costs, effort estimates, and filtering. Integrates with Planner to collect DEC-ID decisions.
+description: Generate an interactive decision configurator from research or plan analysis. Presents options as explorable cards with trade-offs, costs, and filtering. Integrates with Planner to collect DEC-ID decisions.
 argument-hint: "[topic, research path, or 'plan' to use current plan context]"
 context: fork
 agent: general-purpose
@@ -9,15 +9,15 @@ allowed-tools: Bash, Read, Write, Glob, Grep, AskUserQuestion
 
 # Decide: Structured Decision Configurator
 
-Generate interactive decision configurators that transform complex trade-off analysis into explorable interfaces. Presents options as cards with visual hierarchy, automatic filtering, cascading dependencies, and live cost/effort tracking.
+Generate interactive decision configurators that transform complex trade-off analysis into explorable interfaces. Presents options as cards with visual hierarchy, automatic filtering, cascading dependencies, and live cost tracking.
 
 ## When to Use /decide
 
 Use this skill when decisions have:
 - **3+ options** with meaningful trade-offs
-- **Dollar amounts** or effort estimates to compare
+- **Dollar amounts** to compare
 - **Cascading dependencies** (choice A eliminates options in choice B)
-- **Multiple dimensions** to evaluate (cost, effort, quality, risk)
+- **Multiple dimensions** to evaluate (cost, quality, risk)
 
 **Don't use for:**
 - Binary yes/no decisions → use AskUserQuestion
@@ -30,7 +30,7 @@ The skill can extract decision points from three sources:
 
 1. **Research directories** — `/decide .claude/research/DeepResearch_Auth_2026-02-11`
    - Parses provider reports (openai.md, perplexity.md, gemini.md)
-   - Extracts competing approaches, trade-offs, and effort estimates
+   - Extracts competing approaches and trade-offs
    - Links to cited sources
 
 2. **MASTER_PLAN.md context** — `/decide plan`
@@ -75,7 +75,7 @@ For each decision source, identify:
    - Steps should flow logically — dependencies become filters
 
 2. **Options** — Alternatives within each step
-   - Each option has: title, badge, price OR effort, specs (pros/cons), tags, links
+   - Each option has: title, badge, price, specs (pros/cons), tags, links
    - Mark recommended option (if clear from research/plan)
    - Mark eliminated options (if constraints rule them out)
 
@@ -84,10 +84,8 @@ For each decision source, identify:
    - "If user picks quantity=3, show triple-arm option"
    - Document as `filterBy` (data-based) or `visibleWhen` (state-based)
 
-4. **Cost/effort tracking** — Live impact bar
+4. **Cost tracking** — Live impact bar
    - Price-based: monitors ($799 × quantity) + arms ($398) + cables ($30 × quantity)
-   - Effort-based: auth (2 days) + database (3 days) + deployment (1 day)
-   - Mix allowed: some steps contribute price, others effort
 
 5. **Summary & Export** — Final output
    - Grid items: "Your monitor: ASUS ProArt PA27JCV", "Total cost: ~$2,795"
@@ -109,8 +107,6 @@ Write `decision-config.json` following the schema. The config is the single sour
 
 2. **Technical decision pattern** — See `fixtures/tech-stack.json`:
    - `meta.type: "technical"`
-   - Effort-based options (days/weeks)
-   - Impact bar summing effort estimates
    - Documentation links instead of buy links
    - Export enabled with DEC-IDs
 
@@ -134,7 +130,7 @@ Write `decision-config.json` following the schema. The config is the single sour
   ```
   Meaning: "Show this arm option only when step 'quantity' has option 'qty-3' selected"
 
-- **impactBar.items**: Dynamic cost/effort calculation
+- **impactBar.items**: Dynamic cost calculation
   ```json
   {
     "label": "Monitors",
@@ -146,7 +142,7 @@ Write `decision-config.json` following the schema. The config is the single sour
 
 **When generating config:**
 1. Start from one of the fixture examples as a template
-2. Replace domain-specific data (monitors → auth methods, prices → effort)
+2. Replace domain-specific data (monitors → auth methods, prices → your domain)
 3. Preserve the structure: meta, steps, impactBar, summary, research (if applicable)
 4. Validate against schema mentally before writing
 
@@ -306,8 +302,6 @@ The schema is defined in `schema/decision-config.schema.json`. Key fields:
 - `recommended` (bool, default false) — Show "RECOMMENDED" ribbon
 - `eliminated` (bool, default false) — Gray out and disable
 - `price` (object, optional) — { amount: number, label: string }
-- `effort` (object, optional) — { amount: string, label: string }
-  - amount can be "2 days", "1 week", "3-5 days"
 - `specs[]` (array, optional) — Bullet points
   - Each spec: { text, type: "highlight" | "warning" | "neutral" }
 - `tags[]` (array, optional) — Tags with ok/not-ok states
@@ -319,7 +313,7 @@ The schema is defined in `schema/decision-config.schema.json`. Key fields:
 
 ### impactBar (optional)
 - `items[]` (array, required if impactBar present)
-  - Each item: { label, fromStep?, effortFromStep?, multiplyByStep?, perUnit?, approximate: bool }
+  - Each item: { label, fromStep?, multiplyByStep?, perUnit?, approximate: bool }
 - `totalLabel` (string, optional, default "Total")
 - `prefix` (string, optional, default "$")
 
@@ -452,7 +446,6 @@ The schema is defined in `schema/decision-config.schema.json`. Key fields:
           "title": "JWT + PKCE Flow",
           "badge": { "text": "Modern", "color": "purple" },
           "recommended": true,
-          "effort": { "amount": "2 days", "label": "implementation" },
           "specs": [
             { "text": "Stateless, scales horizontally", "type": "highlight" },
             { "text": "No server-side session storage needed", "type": "highlight" },
@@ -466,7 +459,6 @@ The schema is defined in `schema/decision-config.schema.json`. Key fields:
           "id": "session-based",
           "title": "Session-Based Auth",
           "badge": { "text": "Traditional", "color": "blue" },
-          "effort": { "amount": "1 day", "label": "implementation" },
           "specs": [
             { "text": "Simple to implement", "type": "highlight" },
             { "text": "Requires sticky sessions or shared state", "type": "warning" }
@@ -483,7 +475,6 @@ The schema is defined in `schema/decision-config.schema.json`. Key fields:
           "id": "postgres-prisma",
           "title": "PostgreSQL + Prisma",
           "recommended": true,
-          "effort": { "amount": "3 days", "label": "schema + migrations" },
           "specs": [
             { "text": "Type-safe queries with Prisma Client", "type": "highlight" },
             { "text": "Built-in migration system", "type": "highlight" }
@@ -494,10 +485,10 @@ The schema is defined in `schema/decision-config.schema.json`. Key fields:
   ],
   "impactBar": {
     "items": [
-      { "label": "Auth Implementation", "effortFromStep": "auth-method" },
-      { "label": "Database Setup", "effortFromStep": "database" }
+      { "label": "Auth", "fromStep": "auth-method" },
+      { "label": "Database", "fromStep": "database" }
     ],
-    "totalLabel": "Total Effort",
+    "totalLabel": "Total",
     "prefix": ""
   },
   "summary": {
@@ -505,7 +496,7 @@ The schema is defined in `schema/decision-config.schema.json`. Key fields:
     "gridItems": [
       { "label": "Auth Method", "template": "{auth-method.title}", "highlight": false },
       { "label": "Database", "template": "{database.title}", "highlight": false },
-      { "label": "Total Effort", "template": "{total}", "highlight": true }
+      { "label": "Total", "template": "{total}", "highlight": true }
     ],
     "export": {
       "enabled": true,

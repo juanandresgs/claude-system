@@ -161,20 +161,6 @@
                     }
                   }
                 },
-                "effort": {
-                  "type": "object",
-                  "required": ["amount"],
-                  "properties": {
-                    "amount": {
-                      "type": "string",
-                      "description": "Effort estimate as string (e.g., '2 days', '1 week', '3-5 days')"
-                    },
-                    "label": {
-                      "type": "string",
-                      "description": "Effort label (e.g., 'implementation', 'setup')"
-                    }
-                  }
-                },
                 "specs": {
                   "type": "array",
                   "items": {
@@ -280,10 +266,6 @@
                 "type": "string",
                 "description": "Step ID - use selected option's price.amount"
               },
-              "effortFromStep": {
-                "type": "string",
-                "description": "Step ID - use selected option's effort.amount (string)"
-              },
               "multiplyByStep": {
                 "type": "string",
                 "description": "Step ID - multiply amount by this step's option.value or option.data.value"
@@ -309,10 +291,10 @@
         "prefix": {
           "type": "string",
           "default": "$",
-          "description": "Prefix for amounts ($ for price, empty for effort)"
+          "description": "Prefix for amounts (e.g., '$' for prices)"
         }
       },
-      "description": "Live impact bar at bottom showing cumulative cost/effort"
+      "description": "Live impact bar at bottom showing cumulative cost"
     },
     "summary": {
       "type": "object",

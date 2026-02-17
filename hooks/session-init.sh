@@ -14,6 +14,27 @@ set -euo pipefail
 # for brand-new sessions. Works for /clear, /compact, resume. Implement
 # anyway — when it works it's valuable, when it doesn't there's no harm.
 
+# --- Syntax gate: validate shared libraries before sourcing ---
+# Catches corruption (merge conflicts, partial writes) before all hooks break.
+_HOOKS_DIR="$(dirname "$0")"
+for _lib in source-lib.sh log.sh context-lib.sh; do
+    if ! bash -n "$_HOOKS_DIR/$_lib" 2>/dev/null; then
+        _SYNTAX_ERR=$(bash -n "$_HOOKS_DIR/$_lib" 2>&1 | head -3)
+        _HAS_MARKERS=$(grep -c '^<\{7\}\|^=\{7\}\|^>\{7\}' "$_HOOKS_DIR/$_lib" 2>/dev/null || echo 0)
+        _REMEDIATION="Run: bash -n ~/.claude/hooks/$_lib"
+        [[ "$_HAS_MARKERS" -gt 0 ]] && _REMEDIATION="Merge conflict markers detected in $_lib. Remove <<<<<<< ======= >>>>>>> lines."
+        cat <<SYNTAX_EOF
+{
+  "hookSpecificOutput": {
+    "hookEventName": "SessionStart",
+    "additionalContext": "CRITICAL: hooks/$_lib has syntax errors — ALL hooks impaired. Error: ${_SYNTAX_ERR}. Fix: ${_REMEDIATION}. Do this BEFORE any other work."
+  }
+}
+SYNTAX_EOF
+        exit 0
+    fi
+done
+
 source "$(dirname "$0")/source-lib.sh"
 
 PROJECT_ROOT=$(detect_project_root)

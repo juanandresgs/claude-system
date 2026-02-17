@@ -212,20 +212,14 @@
     margin-bottom: 6px;
   }
 
-  .card .price,
-  .card .effort {
+  .card .price {
     font-size: 1.5rem;
     font-weight: 700;
     color: var(--accent);
     margin-bottom: 12px;
   }
 
-  .card .effort {
-    color: var(--green);
-  }
-
-  .card .price span,
-  .card .effort span {
+  .card .price span {
     font-size: 0.85rem;
     color: var(--text-dim);
     font-weight: 400;
@@ -811,11 +805,9 @@ function renderWizard() {
       // Title
       cardContent += `<h3>${option.title}</h3>`;
 
-      // Price or Effort
+      // Price
       if (option.price) {
         cardContent += `<p class="price">$${option.price.amount.toLocaleString()} ${option.price.label ? `<span>${option.price.label}</span>` : ''}</p>`;
-      } else if (option.effort) {
-        cardContent += `<p class="effort">${option.effort.amount} ${option.effort.label ? `<span>${option.effort.label}</span>` : ''}</p>`;
       }
 
       // Specs
@@ -1038,16 +1030,6 @@ function updateImpactBar() {
       }
     }
 
-    // Get effort from step
-    if (item.effortFromStep && state[item.effortFromStep]) {
-      const stepConfig = CONFIG.steps.find(s => s.id === item.effortFromStep);
-      const selectedOption = stepConfig.options.find(o => o.id === state[item.effortFromStep]);
-      if (selectedOption?.effort?.amount) {
-        value = selectedOption.effort.amount;
-        isNumeric = false;
-      }
-    }
-
     // Use fixed perUnit value
     if (item.perUnit !== undefined) {
       value = item.perUnit;
@@ -1104,7 +1086,6 @@ function updateImpactBar() {
     totalContainer.textContent = `~${prefix}${total.toLocaleString()}`;
     totalContainer.classList.remove('empty');
   } else if (total === 0 && !hasNumericTotal) {
-    // All effort-based, no numeric total
     totalContainer.textContent = CONFIG.impactBar.totalLabel || 'Total';
     totalContainer.classList.add('empty');
   } else {
@@ -1149,7 +1130,6 @@ function showSummary() {
 
         if (field === 'title') return selectedOption.title;
         if (field === 'price' && selectedOption.price) return '$' + selectedOption.price.amount.toLocaleString();
-        if (field === 'effort' && selectedOption.effort) return selectedOption.effort.amount;
         if (field === 'value') return selectedOption.value || state[stepId];
 
         return '--';

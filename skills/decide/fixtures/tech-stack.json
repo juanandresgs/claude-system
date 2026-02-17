@@ -21,7 +21,6 @@
           "title": "JWT + PKCE Flow",
           "badge": { "text": "Modern", "color": "purple" },
           "recommended": true,
-          "effort": { "amount": "2 days", "label": "implementation" },
           "specs": [
             { "text": "Stateless, scales horizontally", "type": "highlight" },
             { "text": "No server-side session storage needed", "type": "highlight" },
@@ -40,7 +39,6 @@
           "id": "session-based",
           "title": "Session-Based Auth",
           "badge": { "text": "Traditional", "color": "blue" },
-          "effort": { "amount": "1 day", "label": "implementation" },
           "specs": [
             { "text": "Simple to implement and reason about", "type": "highlight" },
             { "text": "Easy to revoke sessions server-side", "type": "highlight" },
@@ -57,7 +55,6 @@
           "id": "oauth-delegated",
           "title": "OAuth Delegated (Auth0/Clerk)",
           "badge": { "text": "Managed", "color": "green" },
-          "effort": { "amount": "3 days", "label": "integration + testing" },
           "specs": [
             { "text": "Offload auth complexity to managed service", "type": "highlight" },
             { "text": "Built-in MFA, social login, session management", "type": "highlight" },
@@ -88,7 +85,6 @@
           "title": "PostgreSQL + Prisma",
           "badge": { "text": "Type-Safe", "color": "purple" },
           "recommended": true,
-          "effort": { "amount": "3 days", "label": "schema + migrations" },
           "specs": [
             { "text": "Type-safe queries with Prisma Client", "type": "highlight" },
             { "text": "Built-in migration system", "type": "highlight" },
@@ -107,7 +103,6 @@
           "id": "mongodb-mongoose",
           "title": "MongoDB + Mongoose",
           "badge": { "text": "Document", "color": "green" },
-          "effort": { "amount": "2 days", "label": "schema definition" },
           "specs": [
             { "text": "Flexible schema for evolving data models", "type": "highlight" },
             { "text": "Fast iteration without strict migrations", "type": "highlight" },
@@ -125,7 +120,6 @@
           "id": "sqlite-drizzle",
           "title": "SQLite + Drizzle ORM",
           "badge": { "text": "Lightweight", "color": "blue" },
-          "effort": { "amount": "2 days", "label": "schema + setup" },
           "specs": [
             { "text": "Zero-config local development", "type": "highlight" },
             { "text": "Drizzle ORM is fast and type-safe", "type": "highlight" },
@@ -152,7 +146,6 @@
           "title": "Docker + Fly.io",
           "badge": { "text": "Containers", "color": "purple" },
           "recommended": true,
-          "effort": { "amount": "2 days", "label": "dockerfile + config" },
           "specs": [
             { "text": "Full control over runtime environment", "type": "highlight" },
             { "text": "Easy to replicate locally with Docker Compose", "type": "highlight" },
@@ -170,7 +163,6 @@
           "id": "serverless-vercel",
           "title": "Serverless (Vercel Functions)",
           "badge": { "text": "Zero-Ops", "color": "green" },
-          "effort": { "amount": "1 day", "label": "config + env vars" },
           "specs": [
             { "text": "Zero infrastructure management", "type": "highlight" },
             { "text": "Auto-scaling with pay-per-use", "type": "highlight" },
@@ -188,7 +180,6 @@
           "id": "vps-manual",
           "title": "VPS (Manual Setup)",
           "badge": { "text": "Traditional", "color": "blue" },
-          "effort": { "amount": "4 days", "label": "server setup + hardening" },
           "specs": [
             { "text": "Full control and cheapest at scale", "type": "highlight" },
             { "text": "Predictable monthly cost", "type": "neutral" },
@@ -207,22 +198,19 @@
   ],
   "impactBar": {
     "items": [
-      { "label": "Auth Implementation", "effortFromStep": "auth-method" },
-      { "label": "Database Setup", "effortFromStep": "database" },
-      { "label": "Deployment Config", "effortFromStep": "deployment" }
+      { "label": "Auth", "fromStep": "auth-method" },
+      { "label": "Database", "fromStep": "database" },
+      { "label": "Deployment", "fromStep": "deployment" }
     ],
-    "totalLabel": "Total Implementation Effort",
+    "totalLabel": "Total",
     "prefix": ""
   },
   "summary": {
     "title": "🎯 Your Tech Stack",
     "gridItems": [
       { "label": "Auth Method", "template": "{auth-method.title}", "highlight": false },
-      { "label": "Auth Effort", "template": "{auth-method.effort}", "highlight": false },
       { "label": "Database", "template": "{database.title}", "highlight": false },
-      { "label": "DB Effort", "template": "{database.effort}", "highlight": false },
-      { "label": "Deployment", "template": "{deployment.title}", "highlight": false },
-      { "label": "Deploy Effort", "template": "{deployment.effort}", "highlight": false }
+      { "label": "Deployment", "template": "{deployment.title}", "highlight": false }
     ],
     "actions": [
       { "text": "Set up repository with TypeScript, ESLint, and Prettier" },
@@ -234,7 +222,7 @@
       { "text": "<strong>Ship MVP to production</strong>", "critical": true }
     ],
     "footer": {
-      "html": "<strong>Recommended Stack:</strong> JWT+PKCE + PostgreSQL+Prisma + Docker+Fly.io gives you type safety, scalability, and control. Total effort: ~7 days for experienced team.<br><br><strong>Alternative for Speed:</strong> OAuth Delegated (Clerk) + MongoDB+Mongoose + Vercel Serverless ships faster but trades control for convenience. Total effort: ~6 days."
+      "html": "<strong>Recommended Stack:</strong> JWT+PKCE + PostgreSQL+Prisma + Docker+Fly.io gives you type safety, scalability, and control.<br><br><strong>Alternative for Speed:</strong> OAuth Delegated (Clerk) + MongoDB+Mongoose + Vercel Serverless ships faster but trades control for convenience."
     },
     "export": {
       "enabled": true,
