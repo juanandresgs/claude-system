@@ -306,6 +306,13 @@ if [[ -f "$FINDINGS_FILE" && -s "$FINDINGS_FILE" ]]; then
     done < "$FINDINGS_FILE"
 fi
 
+# --- Observatory suggestions ---
+OBS_STATE="$HOME/.claude/observatory/state.json"
+if [[ -f "$OBS_STATE" ]]; then
+    OBS_PENDING=$(jq -r 'select(.pending_suggestion != null) | "\(.pending_title) (priority: \(.pending_priority))"' "$OBS_STATE" 2>/dev/null)
+    [[ -n "$OBS_PENDING" ]] && CONTEXT_PARTS+=("Observatory: improvement ready — $OBS_PENDING. Run /observatory to review.")
+fi
+
 # --- Reset prompt-count so first-prompt fallback re-fires after /clear ---
 # The first-prompt path in prompt-submit.sh is the reliable HUD injection point.
 # Without this reset, /clear leaves the old prompt-count file and the fallback
