@@ -172,9 +172,6 @@ rm -f "${CLAUDE_DIR}/.subagent-tracker-${CLAUDE_SESSION_ID:-$$}"
 # It must survive session-end so session-init can read it for context injection,
 # then clears it to prevent stale results from satisfying the commit gate.
 
-# Clean session hook-library cache
-rm -rf "${HOME}/.claude/.hook-cache/${CLAUDE_SESSION_ID:-$$}" 2>/dev/null || true
-
 # --- Trim audit log to prevent unbounded growth (keep last 100 entries) ---
 AUDIT_LOG="${CLAUDE_DIR}/.audit-log"
 if [[ -f "$AUDIT_LOG" ]]; then

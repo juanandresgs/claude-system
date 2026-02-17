@@ -270,9 +270,13 @@ if [[ -f "$TEST_STATUS" ]]; then
     rm -f "$TEST_STATUS"
 fi
 
-# --- Clean stale hook-library caches (crashed sessions) ---
-# Caches older than 24h belong to sessions that exited without running session-end.sh.
-find "${HOME}/.claude/.hook-cache" -maxdepth 1 -type d -mmin +1440 -exec rm -rf {} + 2>/dev/null || true
+# --- Smoke test: validate library sourcing ---
+# Verifies that log.sh and context-lib.sh can be sourced without error.
+# Catches corruption early (e.g., partial writes during git merge) before
+# all 29 hooks fail silently. Runs in a subshell so failures don't kill this hook.
+if ! (source "$(dirname "$0")/source-lib.sh") 2>/dev/null; then
+    CONTEXT_PARTS+=("WARNING: Hook library smoke test FAILED. log.sh or context-lib.sh may be corrupted. Run: bash -n ~/.claude/hooks/log.sh && bash -n ~/.claude/hooks/context-lib.sh")
+fi
 
 # --- Initialize session event log ---
 # After compaction, preserve the event log — the trajectory is still relevant
