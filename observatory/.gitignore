@@ -1,0 +1,19 @@
+# observatory/.gitignore — exclude runtime state from version control
+#
+# Purpose: The observatory/ dir holds persistent runtime state (state.json,
+#          history.jsonl, suggestions/, analysis-cache.json). These are created
+#          on first run and should not be committed — they belong to the
+#          local machine and accumulate over time.
+#
+# Only the .gitignore itself is committed so the directory is tracked.
+
+# Runtime state files
+state.json
+history.jsonl
+analysis-cache.json
+
+# Generated suggestion files
+suggestions/
+
+# Temp files
+*.tmp
