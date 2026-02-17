@@ -151,11 +151,13 @@ fi
 # Verified status can be cleaned up freely.
 if echo "$_proof_stripped" | grep -qE 'rm\s+(-[a-zA-Z]*\s+)*\S*proof-status'; then
     _ps_dir=$(get_claude_dir)
-    _ps_file="${_ps_dir}/.proof-status"
-    if [[ -f "$_ps_file" ]]; then
-        _ps_val=$(cut -d'|' -f1 "$_ps_file")
-        if [[ "$_ps_val" == "pending" || "$_ps_val" == "needs-verification" ]]; then
-            deny "Cannot delete .proof-status while verification is active (status: $_ps_val). Complete the verification flow first."
+    if ! is_claude_meta_repo "$(detect_project_root)"; then
+        _ps_file="${_ps_dir}/.proof-status"
+        if [[ -f "$_ps_file" ]]; then
+            _ps_val=$(cut -d'|' -f1 "$_ps_file")
+            if [[ "$_ps_val" == "pending" || "$_ps_val" == "needs-verification" ]]; then
+                deny "Cannot delete .proof-status while verification is active (status: $_ps_val). Complete the verification flow first."
+            fi
         fi
     fi
 fi
