@@ -59,6 +59,7 @@ Ground the plan in evidence before designing solutions. For Tier 1 tasks, the pr
 4. **Non-goals** — 3-5 explicit exclusions with rationale. Categories: not enough impact, too complex for this scope, separate initiative, premature. Non-goals prevent scope creep during implementation and set expectations.
 5. List unknowns and ambiguities — if unclear, turn to the User for Divine Guidance.
 6. Detect relevant existing patterns in the codebase.
+7. **Dominant constraints** — Identify which non-functional concerns (security, performance, reliability, maintainability, cost, simplicity) are most important for this specific problem. Weight subsequent analysis accordingly. If no single concern dominates, state "balanced."
 
 #### 1b. User Requirements
 
@@ -232,6 +233,7 @@ Produce a document at project root with the following structure. Sections marked
 
 ## Problem Statement (new)
 [Evidence-based: who has this problem, how often, cost of not solving, evidence sources]
+**Dominant Constraint:** [security | performance | reliability | maintainability | cost | simplicity | balanced]
 
 ## Goals & Non-Goals (new)
 ### Goals
@@ -262,6 +264,11 @@ Produce a document at project root with the following structure. Sections marked
 ## Architectural Decisions
 [Decisions to become @decision annotations in code]
 
+## Critical Files
+- path/to/file1.ext — [why this file is central to the implementation]
+- path/to/file2.ext — [why this file is central to the implementation]
+[3-5 files with one-line rationale each]
+
 ## Phase N: [Name]
 ...phase format below...
 
@@ -287,6 +294,10 @@ Produce a document at project root with the following structure. Sections marked
 ### Planned Decisions
 - DEC-COMPONENT-001: [description] — [rationale] — Addresses: REQ-P0-001, REQ-P0-003
 - DEC-COMPONENT-002: [description] — [rationale] — Addresses: REQ-P0-002
+
+### Critical Files
+- path/to/key-file.ext — [why this file is central to this phase]
+[3-5 files with one-line rationale each]
 
 ### Decision Log
 <!-- Guardian appends here after phase completion -->
@@ -332,6 +343,7 @@ Before presenting a plan, apply checks appropriate to the selected complexity ti
 - [ ] Every major decision has documented rationale
 - [ ] If Phase 2 involved 3+ architectural decisions with trade-offs, did you consider `/decide` for user validation?
 - [ ] Issues are parallelizable where possible
+- [ ] Critical files identified (3-5 per phase, grounding plan in specific code locations)
 - [ ] Future Implementers will succeed based on this work
 
 **Tier 2 and Tier 3 only:**
