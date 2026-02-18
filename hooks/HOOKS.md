@@ -122,6 +122,12 @@ Source with: `source "$(dirname "$0")/context-lib.sh"`
 
 `$SOURCE_EXTENSIONS` is the single source of truth for source file detection: `ts|tsx|js|jsx|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh`
 
+### source-lib.sh — Bootstrap loader
+
+Source with: `source "$(dirname "$0")/source-lib.sh"`
+
+Single-file bootstrapper that sources both `log.sh` and `context-lib.sh` with correct path resolution. Used by hooks that need the full library stack in one line.
+
 ---
 
 ## Execution Order (Session Lifecycle)
@@ -133,7 +139,7 @@ UserPromptSubmit → prompt-submit.sh (keyword-based context injection)
                     ↓
 PreToolUse:Bash → guard.sh (sacred practice guardrails + rewrites)
                    auto-review.sh (intelligent command auto-approval)
-PreToolUse:W/E  → test-gate.sh → mock-gate.sh → branch-guard.sh → doc-gate.sh → plan-check.sh
+PreToolUse:W/E  → test-gate.sh → mock-gate.sh → branch-guard.sh → doc-gate.sh → plan-check.sh → checkpoint.sh
                     ↓
 [Tool executes]
                     ↓
@@ -166,6 +172,7 @@ Hooks within the same event run **sequentially** in array order from settings.js
 | **branch-guard.sh** | Write\|Edit | Blocks source file writes on main/master branch |
 | **doc-gate.sh** | Write\|Edit | Enforces file headers and @decision annotations on 50+ line files; Write = hard deny, Edit = advisory; warns on new root-level markdown files (Sacred Practice #9) |
 | **plan-check.sh** | Write\|Edit | Denies source writes without MASTER_PLAN.md; composite staleness scoring (source churn % + decision drift) warns then blocks when plan diverges from code; bypasses Edit tool, small writes (<20 lines), non-git dirs |
+| **checkpoint.sh** | Write\|Edit | Creates git ref-based snapshots (`refs/checkpoints/<branch>/<N>`) before source file writes. Uses temporary index + write-tree + commit-tree (zero working copy impact, no stash pollution). Tracks checkpoint frequency via `.checkpoint-counter`. Guardian cleans up refs after merge |
 
 ### PostToolUse — Feedback After Execution
 
@@ -177,6 +184,8 @@ Hooks within the same event run **sequentially** in array order from settings.js
 | **plan-validate.sh** | Write\|Edit | Validates MASTER_PLAN.md structure on every write: phase Status fields (`planned`/`in-progress`/`completed`), Decision Log content for completed phases, original intent section preserved, DEC-COMPONENT-NNN ID format, REQ-{CATEGORY}-NNN ID format. Advisory warnings for missing Goals/Non-Goals/Requirements/Success Metrics sections and completed phases without REQ-ID references. Exit 2 = feedback loop with fix instructions |
 | **test-runner.sh** | Write\|Edit | **Async** — doesn't block Claude. Auto-detects test framework (pytest, vitest, jest, npm-test, cargo-test, go-test). 2s debounce lets rapid writes settle. 10s cooldown between runs. Lock file ensures single instance (kills previous run if superseded). Writes `.test-status` (`pass\|0\|timestamp` or `fail\|count\|timestamp`) consumed by test-gate.sh and guard.sh. Reports results via `systemMessage` |
 | **skill-result.sh** | Skill | Reads `.skill-result.md` from forked skills, injects as `additionalContext` to parent session. Surfaces research/analysis results from `context: fork` skills (deep-research, last30days, decide, consume-content, prd, uplevel) back to orchestrator. Truncates files over 4000 bytes. Deletes file after reading to prevent stale results. Exit 0 silently if file doesn't exist |
+| **webfetch-fallback.sh** | WebFetch | Fires when WebFetch tool fails (non-200 response or error). Suggests `mcp__fetch__fetch` as alternative fetch method. Exit 0 (advisory only) |
+| **playwright-cleanup.sh** | mcp__playwright__browser_snapshot | Cleanup after Playwright browser snapshots. Prevents stale browser state accumulation |
 
 ### Session Lifecycle
 

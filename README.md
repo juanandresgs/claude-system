@@ -1,21 +1,36 @@
 <p align="center">
-  <img src="assets/banner.jpeg" alt="The Systems Thinker's Vibecoding Starter Kit" width="100%">
+  <img src="assets/banner.jpeg" alt="The Systems Thinker's Claude Code Governance Platform" width="100%">
 </p>
 
-# The Systems Thinker's Vibecoding Starter Kit
+# The Systems Thinker's Claude Code Governance Platform
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/juanandresgs/claude-system)](https://github.com/juanandresgs/claude-system/stargazers)
 [![Last commit](https://img.shields.io/github/last-commit/juanandresgs/claude-system)](https://github.com/juanandresgs/claude-system/commits/main)
 [![Shell](https://img.shields.io/badge/language-bash-green.svg)](hooks/)
 
-JAGS' batteries-included Claude Code config
-
-Claude Code out of the box is capable but undisciplined. It commits directly to main. It skips tests. It starts implementing before understanding the problem. It force-pushes without thinking. None of these are bugs — they're defaults.
-
-This system replaces those defaults with mechanical enforcement. Three specialized agents divide the work — Planner, Implementer, Guardian — so no single context handles planning, implementation, and git operations. Hooks run deterministically at every lifecycle event. They don't depend on the model remembering instructions. They execute regardless of context window pressure.
+A batteries-included governance layer for Claude Code. Four specialized agents handle planning, implementation, verification, and git operations. Thirty-three shell scripts enforce the rules at every lifecycle event, regardless of context window pressure.
 
 **Instructions guide. Hooks enforce.**
+
+---
+
+## Platform at a Glance
+
+```
+~/.claude/
+├── hooks/          # 30 hook scripts + 3 shared libraries
+├── agents/         # 4 agent definitions (Planner, Implementer, Tester, Guardian)
+├── skills/         # 11 skills across 3 domains
+├── commands/       # 3 slash commands (/compact, /backlog, /approve)
+├── scripts/        # 7 utility scripts + lib/
+├── observatory/    # Self-improving trace analysis
+├── traces/         # Agent execution archive (491 indexed)
+├── tests/          # Hook validation suite
+├── ARCHITECTURE.md # Definitive technical reference (18 sections)
+├── CLAUDE.md       # Session instructions (loaded every time)
+└── settings.json   # Hook registration + model config
+```
 
 ---
 
@@ -66,14 +81,21 @@ The model writes on main, skips tests, force-pushes, and forgets the plan once t
               └────────────────────────┬───────────────────────┘
                                        ▼
                 ┌──────────────────────────────────────────────┐
-                │  Guardian agent: commit (requires test       │
-                │  evidence + your approval) → merge to main   │
+                │  Tester agent: live E2E verification          │
+                │  → proof-of-work evidence written to disk     │
+                │  → check-tester.sh: auto-verify or           │
+                │    surface report for user approval           │
+                └──────────────────────┬───────────────────────┘
+                                       ▼
+                ┌──────────────────────────────────────────────┐
+                │  Guardian agent: commit (requires verified    │
+                │  proof-of-work + approval) → merge to main   │
                 └──────────────────────────────────────────────┘
 ```
 
-Every arrow is a hook. Every feedback loop is automatic. The model doesn't choose to follow the process — the hooks won't let it skip. Try to write code without a plan and you're pushed back. Try to commit with failing tests and you're pushed back. Try to skip documentation and you're pushed back. The system self-corrects until the work is right.
+Every arrow is a hook. Every feedback loop is automatic. The model doesn't choose to follow the process — the hooks won't let it skip. Try to write code without a plan and you're pushed back. Try to commit with failing tests and you're pushed back. Try to skip documentation and you're pushed back. Try to commit without tester sign-off and you're pushed back. The system self-corrects until the work is right.
 
-**The result:** you move faster because you never think about process. The hooks think about it for you. Dangerous commands get silently rewritten (`--force` → `--force-with-lease`, `/tmp/` → project `tmp/`). Everything else either flows through or gets caught. You just describe what you want and review what comes out.
+**The result:** you move faster because you never think about process. The hooks think about it for you. Dangerous commands get denied or rewritten (`--force` → `--force-with-lease`, `/tmp/` → project `tmp/`). Everything else either flows through or gets caught. You just describe what you want and review what comes out.
 
 ---
 
@@ -158,7 +180,13 @@ The harness auto-checks for updates on every new session start. Same-MAJOR-versi
                   │ Implementer  │──── tests + code + @decision
                   │  (sonnet)    │
                   └──────┬───────┘
-                         │ verified feature
+                         │ tests passing
+                         ▼
+                  ┌──────────────┐
+                  │    Tester    │──── live E2E verification + evidence
+                  │  (sonnet)    │
+                  └──────┬───────┘
+                         │ verified (auto or user approval)
                          ▼
                   ┌──────────────┐
                   │   Guardian   │──── commit + merge + plan update
@@ -174,10 +202,13 @@ The harness auto-checks for updates on every new session start. Same-MAJOR-versi
 | Agent | Model | Role | Key Output |
 |-------|-------|------|------------|
 | **Planner** | Opus | Complexity assessment (Brief/Standard/Full tiers), problem decomposition, requirements (P0/P1/P2 with acceptance criteria), success metrics, architecture design, research gate | MASTER_PLAN.md (with REQ-IDs + DEC-IDs), GitHub Issues, research log |
-| **Implementer** | Sonnet | Test-first coding in isolated worktrees | Working code, tests, @decision annotations |
+| **Implementer** | Sonnet | Test-first coding in isolated worktrees | Working code, tests, @decision annotations, trace artifacts |
+| **Tester** | Sonnet | Live E2E verification — run the feature, observe real behavior, report confidence level | Verification report, proof evidence, auto-verify signal |
 | **Guardian** | Opus | Git operations, merge analysis, plan evolution | Commits, merges, phase reviews, plan updates |
 
 The orchestrator dispatches to agents but never writes source code itself. Each agent handles its own approval cycle: present the work, wait for approval, execute, verify, suggest next steps.
+
+For the complete agent protocol and dispatch rules, see [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ---
 
@@ -196,6 +227,7 @@ These are non-negotiable. Each one is enforced by hooks that run every time, reg
 | 7 | **Code is Truth** | `doc-gate.sh` enforces headers and @decision on 50+ line files |
 | 8 | **Approval Gates** | `guard.sh` blocks force push; Guardian agent requires approval for all permanent ops |
 | 9 | **Track in Issues** | `plan-validate.sh` checks alignment; `check-planner.sh` validates issue creation |
+| 10 | **Proof Before Commit** | `check-tester.sh` auto-verify evaluation; `prompt-submit.sh` user approval gate; `guard.sh` evidence gate on commits |
 
 ---
 
@@ -205,34 +237,65 @@ All hooks are registered in `settings.json` and run deterministically — JSON i
 
 For the full protocol, detailed tables, enforcement patterns, state files, and shared library APIs, see [`hooks/HOOKS.md`](hooks/HOOKS.md).
 
+**Shared Libraries** (not registered as hooks — sourced by hook scripts):
+- `context-lib.sh` — Git state, plan status, worktree inventory, shared utilities
+- `source-lib.sh` — Source file detection, language identification
+- `log.sh` — Structured logging with levels and rotation
+
+**PreToolUse Hooks** — fire before every tool call; can block or rewrite:
+
 | Hook | Event | Purpose |
 |------|-------|---------|
 | **guard.sh** | PreToolUse:Bash | `/tmp/` rewrite, main protection, `--force-with-lease`, test evidence gate |
 | **auto-review.sh** | PreToolUse:Bash | Three-tier command classifier: auto-approve safe, defer risky to user |
+| **checkpoint.sh** | PreToolUse:Write\|Edit | Git ref-based snapshots before writes (restoreable via `/rewind`) |
 | **test-gate.sh** | PreToolUse:Write\|Edit | Escalating gate: warn then block when tests fail |
 | **mock-gate.sh** | PreToolUse:Write\|Edit | Detect and escalate internal mocking |
 | **branch-guard.sh** | PreToolUse:Write\|Edit | Block source writes on main/master |
 | **doc-gate.sh** | PreToolUse:Write\|Edit | Enforce file headers and @decision on 50+ line files |
 | **plan-check.sh** | PreToolUse:Write\|Edit | Deny source writes without plan; staleness scoring |
+| **task-track.sh** | PreToolUse:Task | Track subagent state and update status bar; gate Guardian on verified proof |
+
+**PostToolUse Hooks** — fire after every tool call; can lint, track, validate:
+
+| Hook | Event | Purpose |
+|------|-------|---------|
 | **lint.sh** | PostToolUse:Write\|Edit | Auto-detect linter, run on modified files, feedback loop |
 | **track.sh** | PostToolUse:Write\|Edit | Record changes, invalidate proof-of-work on source edits |
 | **test-runner.sh** | PostToolUse:Write\|Edit | Async test execution, writes `.test-status` for evidence gate |
+| **plan-validate.sh** | PostToolUse:Write\|Edit | Validate MASTER_PLAN.md format, REQ-ID syntax, decision linkage |
+| **code-review.sh** | PostToolUse:Write\|Edit | Optional LLM-based code review integration (requires Multi-MCP) |
 | **skill-result.sh** | PostToolUse:Skill | Reads `.skill-result.md` from forked skills, injects as context |
+| **webfetch-fallback.sh** | PostToolUse:WebFetch | Suggest `mcp__fetch__fetch` when WebFetch fails or is blocked |
+| **playwright-cleanup.sh** | PostToolUse:browser\_snapshot | Browser session cleanup after Playwright tool use |
+
+**Session & Notification Hooks**:
+
+| Hook | Event | Purpose |
+|------|-------|---------|
 | **session-init.sh** | SessionStart | Inject git state, update status, plan status, worktrees, todo HUD (calls `scripts/update-check.sh`) |
-| **prompt-submit.sh** | UserPromptSubmit | Keyword-based context injection, deferred-work detection |
+| **prompt-submit.sh** | UserPromptSubmit | Keyword-based context injection, deferred-work detection, proof-status gate |
 | **compact-preserve.sh** | PreCompact | Dual-path context preservation across compaction |
+| **notify.sh** | Notification | Desktop alert when Claude needs attention (macOS) |
+| **session-end.sh** | SessionEnd | Cleanup session files, kill async processes |
+
+**Stop Hooks** — fire when Claude finishes responding:
+
+| Hook | Event | Purpose |
+|------|-------|---------|
 | **surface.sh** | Stop | Decision audit: extract, validate, reconcile @decision coverage, REQ-ID traceability |
 | **session-summary.sh** | Stop | File counts, git state, workflow-aware next-action guidance |
 | **forward-motion.sh** | Stop | Ensure response ends with question, suggestion, or offer |
-| **plan-validate.sh** | PostToolUse:Write\|Edit | Validate MASTER_PLAN.md format, REQ-ID syntax, decision linkage |
-| **code-review.sh** | PostToolUse:Write\|Edit | Optional LLM-based code review integration (requires Multi-MCP) |
-| **task-track.sh** | PreToolUse:Task | Track subagent state and update status bar |
-| **notify.sh** | Notification | Desktop alert when Claude needs attention (macOS) |
-| **subagent-start.sh** | SubagentStart | Agent-specific context injection |
+
+**SubagentStart/Stop Hooks** — fire around Task tool invocations:
+
+| Hook | Event | Purpose |
+|------|-------|---------|
+| **subagent-start.sh** | SubagentStart | Agent-specific context injection (plan, worktree, prior traces) |
 | **check-planner.sh** | SubagentStop:planner | Verify MASTER_PLAN.md exists and is valid |
 | **check-implementer.sh** | SubagentStop:implementer | Enforce proof-of-work (live demo + tests) before commits |
+| **check-tester.sh** | SubagentStop:tester | Auto-verify evaluation; write `.proof-status` if High confidence + clean |
 | **check-guardian.sh** | SubagentStop:guardian | Validate commit message format and issue linkage |
-| **session-end.sh** | SessionEnd | Cleanup session files, kill async processes |
 
 ---
 
@@ -268,19 +331,55 @@ REQ-IDs (`REQ-{CATEGORY}-{NNN}`) are assigned during planning. DEC-IDs link to R
 
 ## Skills and Commands
 
+### Skills
+
+**Governance:**
+
 | Skill | Purpose |
 |-------|---------|
-| **uplevel** | Comprehensive repository health audit — security, testing, quality, docs, staleness, standards |
-| **decide** | Interactive decision configurator — explore trade-offs, costs, effort estimates with filtering UI |
+| **observatory** | Self-improving flywheel: analyze agent traces, surface improvement signals, suggest configuration updates |
+| **diagnose** | System health check: hook integrity, state file consistency, configuration validation |
+| **rewind** | List and restore git-ref checkpoints created by `checkpoint.sh` |
+| **uplevel** | Six-dimensional repository health audit — security, testing, quality, docs, staleness, standards |
+
+**Research:**
+
+| Skill | Purpose |
+|-------|---------|
 | **deep-research** | Multi-model research via OpenAI + Perplexity + Gemini with comparative synthesis |
-| **last30days** | Recent discussions from Reddit, X, and web with engagement metrics (submodule) |
-| **prd** | Optional deep-dive PRD: problem statement, user journeys, requirements, success metrics |
+| **last30days** | Recent community discussions from Reddit, X, and web with engagement metrics |
+| **consume-content** | Structured content analysis and extraction from URLs or documents |
+| **generate-paper-snapshot** | Academic paper analysis and summarization |
+
+**Workflow:**
+
+| Skill | Purpose |
+|-------|---------|
 | **context-preservation** | Structured summaries for session continuity across compaction |
+| **decide** | Interactive decision configurator — explore trade-offs, costs, effort estimates with filtering UI |
+| **prd** | Deep-dive PRD: problem statement, user journeys, requirements, success metrics |
+
+### Commands
 
 | Command | Purpose |
 |---------|---------|
 | `/compact` | Generate structured context summary before compaction (prevents amnesia) |
 | `/backlog` | Unified backlog management — list, create, close, triage todos via GitHub Issues |
+| `/approve` | Quick-approve tester verification evidence to unblock Guardian dispatch |
+
+---
+
+## Utility Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `todo.sh` | GitHub Issues backend for `/backlog` command |
+| `worktree-roster.sh` | Worktree inventory, stale detection, cleanup |
+| `statusline.sh` | Status bar enrichment from `.statusline-cache` |
+| `update-check.sh` | Auto-update with breaking change detection |
+| `community-check.sh` | Community engagement monitoring |
+| `batch-fetch.py` | Cascade-proof multi-URL fetching (use for 3+ URLs) |
+| `lib/keychain.py` | macOS keychain integration for API keys |
 
 ---
 
@@ -300,6 +399,10 @@ REQ-IDs (`REQ-{CATEGORY}-{NNN}`) are assigned during planning. DEC-IDs link to R
 | Context loss | Compaction loses everything | Dual-path preservation: persistent file + compaction directive |
 | Commits | Executes on request | Requires approval via Guardian agent; test + proof-of-work evidence |
 | Code review | None | Suggested on significant file writes (when Multi-MCP available) |
+| Verification | Self-reported done | Tester runs live, auto-verify (High confidence) or user approval gate |
+| Checkpoints | No snapshots | Git ref-based checkpoints before every write; restore with `/rewind` |
+| Learning | No memory across sessions | Observatory analyzes traces, surfaces improvement suggestions |
+| CWD safety | Delete worktree = bricked session | Three-path CWD recovery: Check 0.5 auto-recover + Check 0.75 deny |
 
 ---
 
@@ -319,6 +422,8 @@ REQ-IDs (`REQ-{CATEGORY}-{NNN}`) are assigned during planning. DEC-IDs link to R
 | Desktop notifications not firing | Install `terminal-notifier` (macOS only): `brew install terminal-notifier` |
 | test-gate blocking unexpectedly | Check `.claude/.test-status` — stale from previous session? Delete it |
 | SessionStart not injecting context | Known bug ([#10373](https://github.com/anthropics/claude-code/issues/10373)). `prompt-submit.sh` mitigates on first prompt |
+| CWD bricked after worktree deletion | guard.sh Check 0.5 auto-recovers on next Bash call. Prevention: never `cd` into worktrees from orchestrator — use absolute paths |
+| Stale `.proof-status` blocking commits | Delete `.claude/.proof-status` manually, or run `/approve` to re-trigger the gate |
 
 ## Recovery and Uninstall
 
@@ -332,9 +437,11 @@ To debug a hook: `echo '{"tool_name":"Bash","tool_input":{"command":"git status"
 
 ## References
 
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — System architecture, 18 sections, design decisions (the authoritative deep-dive)
 - [`hooks/HOOKS.md`](hooks/HOOKS.md) — Full hook reference: protocol, detailed tables, enforcement patterns, state files, shared libraries
 - [`agents/planner.md`](agents/planner.md) — Planning process, research gate, MASTER_PLAN.md format
 - [`agents/implementer.md`](agents/implementer.md) — Test-first workflow, worktree setup, verification checkpoints
+- [`agents/tester.md`](agents/tester.md) — Verification protocol, confidence levels, auto-verify conditions
 - [`agents/guardian.md`](agents/guardian.md) — Approval protocol, merge analysis, phase-boundary plan updates
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — How to contribute
 - [`CHANGELOG.md`](CHANGELOG.md) — Release history
