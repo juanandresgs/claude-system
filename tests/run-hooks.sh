@@ -1589,6 +1589,9 @@ V2_TEST_FILES=(
     "test-session-context.sh"
     "test-proof-gate.sh"
     "test-auto-verify.sh"
+    "test-guard-cwd-recovery.sh"
+    "test-guard-check5-spaces.sh"
+    "test-guard-worktree-cd.sh"
 )
 
 for test_file in "${V2_TEST_FILES[@]}"; do
