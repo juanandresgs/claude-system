@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-set -euo pipefail
-
 # SubagentStop:tester — validation of tester output with auto-verify support.
 # Checks that the tester completed its verification job:
 #   - .proof-status exists (at least pending)
@@ -8,6 +6,11 @@ set -euo pipefail
 #     auto-writes verified status (bypasses manual approval)
 #   - If still pending → exit 0 with advisory (user approval flow)
 #   - If verified → exit 0 (Guardian dispatch unblocked)
+#
+# Structure: auto-verify critical path runs FIRST (Phase 1, <2s budget).
+# Heavy advisory work (git state, trace finalization, completeness gate) runs
+# only after auto-verify is resolved (Phase 2). This ensures the hook exits
+# before the 15s timeout even when git and trace I/O is slow.
 #
 # @decision DEC-TESTER-001
 # @title Tester SubagentStop with auto-verify for clean e2e verifications
@@ -18,6 +21,8 @@ set -euo pipefail
 #   verified — bypassing manual approval. Otherwise, the user must approve.
 #   Guard.sh Check 9 only blocks Bash tool writes, not hook file operations.
 #   track.sh resets proof if source files change post-verification.
+#   Auto-verify runs FIRST to avoid timeout before reaching this logic.
+set -euo pipefail
 
 source "$(dirname "$0")/source-lib.sh"
 
@@ -26,6 +31,96 @@ AGENT_RESPONSE=$(read_input 2>/dev/null || echo "{}")
 
 PROJECT_ROOT=$(detect_project_root)
 CLAUDE_DIR=$(get_claude_dir)
+
+# ============================================================================
+# PHASE 1 — Critical path (must complete in <2s)
+# ============================================================================
+
+# Check 1: .proof-status exists (tester should have written pending)
+# Use resolve_proof_file() so worktree scenarios find the right path.
+# The tester writes "pending" to its worktree .claude/; resolve_proof_file()
+# reads the breadcrumb and returns the worktree path when active.
+PROOF_FILE=$(resolve_proof_file)
+PROOF_STATUS="missing"
+if [[ -f "$PROOF_FILE" ]]; then
+    PROOF_STATUS=$(cut -d'|' -f1 "$PROOF_FILE")
+fi
+
+# Meta-repo exemption: .proof-status is never created for ~/.claude
+# (task-track.sh Gate C exempts meta-repos). Treat as pending for auto-verify.
+if [[ "$PROOF_STATUS" == "missing" ]] && is_claude_meta_repo "$PROJECT_ROOT"; then
+    PROOF_STATUS="pending"
+fi
+
+# Extract response text early — needed for auto-verify
+RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.response // .result // .output // empty' 2>/dev/null || echo "")
+
+# --- Auto-verify: check if tester signals clean verification ---
+# Runs in Phase 1 so it completes well within the 15s timeout.
+AUTO_VERIFIED=false
+AV_FAIL=false
+NOT_TESTED_LINES=""
+WHITELISTED_COUNT=0
+
+if [[ "$PROOF_STATUS" == "pending" ]] && echo "$RESPONSE_TEXT" | grep -q 'AUTOVERIFY: CLEAN'; then
+    # Secondary validation — reject false claims
+    # Must have High confidence (markdown bold)
+    echo "$RESPONSE_TEXT" | grep -qi '\*\*High\*\*' || AV_FAIL=true
+    # Must NOT have "Partially verified" in coverage
+    echo "$RESPONSE_TEXT" | grep -qi 'Partially verified' && AV_FAIL=true
+    # Must NOT have non-environmental "Not tested" entries.
+    # Environmental gaps (browser viewport, screen reader, physical device, etc.)
+    # are whitelisted — they cannot be tested in a headless CLI context and do not
+    # indicate incomplete verification of the feature under test.
+    NOT_TESTED_LINES=$(echo "$RESPONSE_TEXT" | grep -i 'Not tested' || true)
+    if [[ -n "$NOT_TESTED_LINES" ]]; then
+        ENV_PATTERN='requires browser\|requires viewport\|requires screen reader\|requires mobile\|requires physical device\|requires hardware\|requires manual interaction\|requires human interaction\|requires GUI\|requires native app\|requires network'
+        NON_ENV_LINES=$(echo "$NOT_TESTED_LINES" | grep -iv "$ENV_PATTERN" || true)
+        if [[ -n "$NON_ENV_LINES" ]]; then
+            AV_FAIL=true
+        fi
+    fi
+    # Must NOT have Medium or Low confidence
+    echo "$RESPONSE_TEXT" | grep -qi '\*\*Medium\*\*\|\*\*Low\*\*' && AV_FAIL=true
+
+    if [[ "$AV_FAIL" == "false" ]]; then
+        ENV_PATTERN='requires browser\|requires viewport\|requires screen reader\|requires mobile\|requires physical device\|requires hardware\|requires manual interaction\|requires human interaction\|requires GUI\|requires native app\|requires network'
+        WHITELISTED_COUNT=$(echo "$NOT_TESTED_LINES" | grep -ic "$ENV_PATTERN" 2>/dev/null || echo "0")
+        echo "verified|$(date +%s)" > "$PROOF_FILE"
+        # Dual-write: keep orchestrator's copy in sync so guard.sh can find it
+        # regardless of which path it checks (worktree vs orchestrator CLAUDE_DIR).
+        ORCH_PROOF="${CLAUDE_DIR}/.proof-status"
+        if [[ "$PROOF_FILE" != "$ORCH_PROOF" ]]; then
+            echo "verified|$(date +%s)" > "$ORCH_PROOF"
+        fi
+        AUTO_VERIFIED=true
+    fi
+fi
+
+# If auto-verified: emit JSON immediately and exit 0.
+# Still do tracking + audit, but skip expensive git/trace/plan work.
+if [[ "$AUTO_VERIFIED" == "true" ]]; then
+    track_subagent_stop "$PROJECT_ROOT" "tester"
+    append_session_event "agent_stop" "{\"type\":\"tester\"}" "$PROJECT_ROOT"
+    if [[ "${WHITELISTED_COUNT:-0}" -gt 0 ]]; then
+        append_audit "$PROJECT_ROOT" "auto_verify" "Tester signaled AUTOVERIFY: CLEAN — secondary validation passed, proof auto-verified (${WHITELISTED_COUNT} environmental 'Not tested' item(s) whitelisted)"
+    else
+        append_audit "$PROJECT_ROOT" "auto_verify" "Tester signaled AUTOVERIFY: CLEAN — secondary validation passed, proof auto-verified"
+    fi
+    CONTEXT="Tester validation: proof-status=verified (auto-verified)."
+    DIRECTIVE="AUTO-VERIFIED: The tester completed e2e verification with High confidence, full coverage, and no caveats. Proof-of-work is now verified. Present the tester's full verification report to the user AND dispatch Guardian simultaneously. The user sees the evidence while the commit is in flight."
+    ESCAPED=$(echo -e "$CONTEXT\n\n$DIRECTIVE" | jq -Rs .)
+    cat <<EOF
+{
+  "additionalContext": $ESCAPED
+}
+EOF
+    exit 0
+fi
+
+# ============================================================================
+# PHASE 2 — Advisory work (runs only when not auto-verified)
+# ============================================================================
 
 # Track subagent completion
 track_subagent_stop "$PROJECT_ROOT" "tester"
@@ -44,17 +139,8 @@ write_statusline_cache "$PROJECT_ROOT"
 
 ISSUES=()
 
-# Check 1: .proof-status exists (tester should have written pending)
-# Use resolve_proof_file() so worktree scenarios find the right path.
-# The tester writes "pending" to its worktree .claude/; resolve_proof_file()
-# reads the breadcrumb and returns the worktree path when active.
-PROOF_FILE=$(resolve_proof_file)
-PROOF_STATUS="missing"
-if [[ -f "$PROOF_FILE" ]]; then
-    PROOF_STATUS=$(cut -d'|' -f1 "$PROOF_FILE")
-fi
-
-if [[ "$PROOF_STATUS" == "missing" && "$PROJECT_ROOT" != "$HOME/.claude" ]]; then
+# Check 1b: Flag missing .proof-status (for non-meta-repo)
+if [[ "$PROOF_STATUS" == "missing" ]] && ! is_claude_meta_repo "$PROJECT_ROOT"; then
     ISSUES+=("Tester returned without writing .proof-status — verification evidence not collected")
 fi
 
@@ -65,14 +151,12 @@ if [[ -n "$TRACE_DIR" && -d "$TRACE_DIR/artifacts" ]]; then
     fi
     # Validate summary exists
     if [[ ! -f "$TRACE_DIR/summary.md" ]]; then
-        RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.response // .result // .output // empty' 2>/dev/null || echo "")
         echo "$RESPONSE_TEXT" | head -c 4000 > "$TRACE_DIR/summary.md" 2>/dev/null || true
     fi
     finalize_trace "$TRACE_ID" "$PROJECT_ROOT" "tester"
 fi
 
 # Response size advisory
-RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.response // .result // .output // empty' 2>/dev/null || echo "")
 if [[ -n "$RESPONSE_TEXT" ]]; then
     WORD_COUNT=$(echo "$RESPONSE_TEXT" | wc -w | tr -d ' ')
     if [[ "$WORD_COUNT" -gt 1200 ]]; then
@@ -104,12 +188,6 @@ if [[ ${#ISSUES[@]} -gt 0 ]]; then
     done
 fi
 
-# Meta-repo exemption: .proof-status is never created for ~/.claude
-# (task-track.sh Gate C exempts meta-repos). Treat as pending for auto-verify.
-if [[ "$PROOF_STATUS" == "missing" && "$PROJECT_ROOT" == "$HOME/.claude" ]]; then
-    PROOF_STATUS="pending"
-fi
-
 # Check 3: Tester completeness — detect partial/incomplete runs
 # A tester that only wrote strategy but never produced verification output
 # must not enter the approval flow. Force resume instead.
@@ -131,9 +209,9 @@ fi
 #   verification-output.txt IS complete even if finalize_trace shows "partial".
 #   The gate exits 2 (force resume) to unblock the tester.
 TESTER_COMPLETE=true
+TRACE_OUTCOME=""
 
 if [[ -n "$TRACE_DIR" && -d "$TRACE_DIR" ]]; then
-    TRACE_OUTCOME=""
     if [[ -f "$TRACE_DIR/manifest.json" ]]; then
         TRACE_OUTCOME=$(jq -r '.outcome // "unknown"' "$TRACE_DIR/manifest.json" 2>/dev/null)
     fi
@@ -172,55 +250,12 @@ if [[ "$PROOF_STATUS" == "verified" ]]; then
 EOF
     exit 0
 elif [[ "$PROOF_STATUS" == "pending" ]]; then
-    # --- Auto-verify: check if tester signals clean verification ---
-    AUTO_VERIFIED=false
+    # Auto-verify was attempted above but AV_FAIL was set.
+    # Check if AUTOVERIFY signal was present but failed secondary validation.
     if echo "$RESPONSE_TEXT" | grep -q 'AUTOVERIFY: CLEAN'; then
-        # Secondary validation — reject false claims
-        AV_FAIL=false
-        # Must have High confidence (markdown bold)
-        echo "$RESPONSE_TEXT" | grep -qi '\*\*High\*\*' || AV_FAIL=true
-        # Must NOT have "Partially verified" in coverage
-        echo "$RESPONSE_TEXT" | grep -qi 'Partially verified' && AV_FAIL=true
-        # Must NOT have non-environmental "Not tested" entries.
-        # Environmental gaps (browser viewport, screen reader, physical device, etc.)
-        # are whitelisted — they cannot be tested in a headless CLI context and do not
-        # indicate incomplete verification of the feature under test.
-        NOT_TESTED_LINES=$(echo "$RESPONSE_TEXT" | grep -i 'Not tested' || true)
-        if [[ -n "$NOT_TESTED_LINES" ]]; then
-            ENV_PATTERN='requires browser\|requires viewport\|requires screen reader\|requires mobile\|requires physical device\|requires hardware\|requires manual interaction\|requires human interaction\|requires GUI\|requires native app\|requires network'
-            NON_ENV_LINES=$(echo "$NOT_TESTED_LINES" | grep -iv "$ENV_PATTERN" || true)
-            if [[ -n "$NON_ENV_LINES" ]]; then
-                AV_FAIL=true
-            fi
-        fi
-        # Must NOT have Medium or Low confidence
-        echo "$RESPONSE_TEXT" | grep -qi '\*\*Medium\*\*\|\*\*Low\*\*' && AV_FAIL=true
-
-        if [[ "$AV_FAIL" == "false" ]]; then
-            WHITELISTED_COUNT=$(echo "$NOT_TESTED_LINES" | grep -ic "$ENV_PATTERN" 2>/dev/null || echo "0")
-            echo "verified|$(date +%s)" > "$PROOF_FILE"
-            # Dual-write: keep orchestrator's copy in sync so guard.sh can find it
-            # regardless of which path it checks (worktree vs orchestrator CLAUDE_DIR).
-            ORCH_PROOF="${CLAUDE_DIR}/.proof-status"
-            if [[ "$PROOF_FILE" != "$ORCH_PROOF" ]]; then
-                echo "verified|$(date +%s)" > "$ORCH_PROOF"
-            fi
-            AUTO_VERIFIED=true
-            if [[ "${WHITELISTED_COUNT:-0}" -gt 0 ]]; then
-                append_audit "$PROJECT_ROOT" "auto_verify" "Tester signaled AUTOVERIFY: CLEAN — secondary validation passed, proof auto-verified (${WHITELISTED_COUNT} environmental 'Not tested' item(s) whitelisted)"
-            else
-                append_audit "$PROJECT_ROOT" "auto_verify" "Tester signaled AUTOVERIFY: CLEAN — secondary validation passed, proof auto-verified"
-            fi
-        else
-            append_audit "$PROJECT_ROOT" "auto_verify_rejected" "Tester signaled AUTOVERIFY: CLEAN but secondary validation failed"
-        fi
+        append_audit "$PROJECT_ROOT" "auto_verify_rejected" "Tester signaled AUTOVERIFY: CLEAN but secondary validation failed"
     fi
-
-    if [[ "$AUTO_VERIFIED" == "true" ]]; then
-        DIRECTIVE="AUTO-VERIFIED: The tester completed e2e verification with High confidence, full coverage, and no caveats. Proof-of-work is now verified. Present the tester's full verification report to the user AND dispatch Guardian simultaneously. The user sees the evidence while the commit is in flight."
-    else
-        DIRECTIVE="TESTER COMPLETE: The tester has presented a verification report with evidence, methodology assessment, and confidence level. Present the full report to the user — do NOT reduce it to a keyword demand. The user can approve (approved, lgtm, looks good, verified, ship it), request more testing, or ask questions. Do NOT tell the user to 'say verified'. Guardian dispatch requires .proof-status = verified (prompt-submit.sh writes this on user approval)."
-    fi
+    DIRECTIVE="TESTER COMPLETE: The tester has presented a verification report with evidence, methodology assessment, and confidence level. Present the full report to the user — do NOT reduce it to a keyword demand. The user can approve (approved, lgtm, looks good, verified, ship it), request more testing, or ask questions. Do NOT tell the user to 'say verified'. Guardian dispatch requires .proof-status = verified (prompt-submit.sh writes this on user approval)."
     ESCAPED=$(echo -e "$CONTEXT\n\n$DIRECTIVE" | jq -Rs .)
     cat <<EOF
 {

@@ -104,7 +104,9 @@ If tests cannot be run (no test framework, infrastructure issue), explain this e
 Before presenting any commit for approval, verify proof-of-work status:
 
 1. Check for `.claude/.proof-status` in the project root
-2. If missing or shows `pending` → tell the orchestrator that the verification checkpoint (Phase 4.5) was skipped. Do NOT proceed with commit — guard.sh will block it anyway.
+2. If missing or shows `pending`:
+   - **If the project is `~/.claude` (meta-infrastructure):** Skip this check — guard.sh Check 8 exempts meta-repos from proof-status enforcement, so proof-status is never created for `~/.claude`.
+   - **Otherwise:** Tell the orchestrator that the verification checkpoint (Phase 4.5) was skipped. Do NOT proceed with commit — guard.sh will block it anyway.
 3. If `verified` → include proof context in your commit presentation:
    - "User verified feature at [timestamp]."
 4. Include proof status alongside test results in the commit summary.
