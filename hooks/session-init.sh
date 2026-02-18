@@ -282,6 +282,21 @@ if [[ -d "$TRACE_STORE" ]]; then
         fi
     done
 
+    # Clean orphaned .proof-status (crash recovery)
+    # At session start, if proof-status is NOT verified and no agents are active
+    # (active markers just cleaned above), the file is stale from a crashed session.
+    PROOF_FILE="${CLAUDE_DIR}/.proof-status"
+    if [[ -f "$PROOF_FILE" ]]; then
+        PROOF_VAL=$(cut -d'|' -f1 "$PROOF_FILE" 2>/dev/null || echo "")
+        if [[ "$PROOF_VAL" != "verified" ]]; then
+            ACTIVE_MARKERS=$(ls "$TRACE_STORE"/.active-* 2>/dev/null | wc -l | tr -d ' ')
+            if [[ "$ACTIVE_MARKERS" -eq 0 ]]; then
+                rm -f "$PROOF_FILE"
+                CONTEXT_PARTS+=("Cleaned stale .proof-status ($PROOF_VAL) — no active agents, likely from crashed session")
+            fi
+        fi
+    fi
+
     # Surface last completed trace for current project
     if [[ -f "$TRACE_STORE/index.jsonl" ]]; then
         PROJECT_NAME=$(basename "$PROJECT_ROOT")

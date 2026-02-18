@@ -415,16 +415,13 @@ else
 fi
 
 # ============================================================
-# Test 11: Implementer in meta-repo on main → allowed (exemption)
+# Test 11: Implementer in meta-repo on main → denied (no exemption)
 # ============================================================
 echo ""
-echo "=== Test 11: Implementer in meta-repo on main → allowed (meta-repo exemption) ==="
+echo "=== Test 11: Implementer in meta-repo on main → denied (no exemption) ==="
 
-# The meta-repo is ~/.claude itself — we can use the real one or detect it
-# Use is_claude_meta_repo() directly to verify exemption
 META_REPO="$HOME/.claude"
 
-# Verify it's actually a git repo we can test against
 if [[ ! -d "${META_REPO}/.git" ]] && ! git -C "$META_REPO" rev-parse --git-dir >/dev/null 2>&1; then
     fail "Test 11 skipped: $META_REPO is not a git repo"
 else
@@ -435,25 +432,28 @@ else
         AGENT_TYPE="implementer"
 
         deny_called=0
+        deny_msg=""
         deny() {
             deny_called=1
+            deny_msg="$1"
         }
 
-        # The gate logic: only runs if NOT meta-repo
-        if ! is_claude_meta_repo "$PROJECT_ROOT"; then
-            CURRENT_BRANCH=$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
-            if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
-                deny "Cannot dispatch implementer on '$CURRENT_BRANCH' branch."
-            fi
+        # The gate logic: no meta-repo exemption — gate runs unconditionally
+        CURRENT_BRANCH=$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+        if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
+            deny "Cannot dispatch implementer on '$CURRENT_BRANCH' branch."
         fi
 
-        echo "$deny_called"
+        echo "$deny_called|$deny_msg"
     )
 
-    if [[ "$hook_result11" == "0" ]]; then
-        pass "Implementer in meta-repo on main → no deny (meta-repo exemption)"
+    deny_called11=$(echo "$hook_result11" | cut -d'|' -f1)
+    deny_msg11=$(echo "$hook_result11" | cut -d'|' -f2-)
+
+    if [[ "$deny_called11" == "1" ]] && echo "$deny_msg11" | grep -q "main"; then
+        pass "Implementer in meta-repo on main → deny triggered (no exemption)"
     else
-        fail "Implementer in meta-repo on main → expected exemption, but deny was called"
+        fail "Implementer in meta-repo on main → expected deny, got: deny_called=$deny_called11 msg='$deny_msg11'"
     fi
 fi
 

@@ -46,36 +46,38 @@ EOF
     exit 0
 }
 
+# --- Concurrency guard: prevent context exhaustion from too many agent forks ---
+# Hard deny at 3+ concurrent agents. Prevents the crash scenario where
+# implementer + tester + additional dispatch exhaust the context window.
+ACTIVE_COUNT=$(ls "$TRACE_STORE"/.active-* 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$ACTIVE_COUNT" -ge 3 ]]; then
+    deny "Cannot dispatch $AGENT_TYPE: $ACTIVE_COUNT agents already active. Wait for agents to complete before dispatching more."
+fi
+
 # --- Gate A: Guardian requires .proof-status = verified (when active) ---
 # Gate is only active when .proof-status file exists (created by implementer dispatch).
 # Missing file = no implementation in progress = allow (fixes bootstrap deadlock).
-# Meta-repo (~/.claude) is exempt — no feature verification needed for config.
 if [[ "$AGENT_TYPE" == "guardian" ]]; then
-    if ! is_claude_meta_repo "$PROJECT_ROOT"; then
-        PROOF_FILE="${CLAUDE_DIR}/.proof-status"
-        if [[ -f "$PROOF_FILE" ]]; then
-            PROOF_STATUS=$(cut -d'|' -f1 "$PROOF_FILE")
-            if [[ "$PROOF_STATUS" != "verified" ]]; then
-                deny "Cannot dispatch Guardian: proof-of-work is '$PROOF_STATUS' (requires 'verified'). Dispatch tester or complete verification before dispatching Guardian."
-            fi
+    PROOF_FILE="${CLAUDE_DIR}/.proof-status"
+    if [[ -f "$PROOF_FILE" ]]; then
+        PROOF_STATUS=$(cut -d'|' -f1 "$PROOF_FILE")
+        if [[ "$PROOF_STATUS" != "verified" ]]; then
+            deny "Cannot dispatch Guardian: proof-of-work is '$PROOF_STATUS' (requires 'verified'). Dispatch tester or complete verification before dispatching Guardian."
         fi
-        # File missing → no implementation in progress → allow (bootstrap path)
     fi
+    # File missing → no implementation in progress → allow (bootstrap path)
 fi
 
 # --- Gate B: Tester requires implementer trace (advisory) ---
 # Prevents premature tester dispatch before implementer has returned.
-# Meta-repo (~/.claude) is exempt.
 if [[ "$AGENT_TYPE" == "tester" ]]; then
-    if ! is_claude_meta_repo "$PROJECT_ROOT"; then
-        IMPL_TRACE=$(detect_active_trace "$PROJECT_ROOT" "implementer" 2>/dev/null || echo "")
-        if [[ -n "$IMPL_TRACE" ]]; then
-            # Active trace means implementer hasn't returned yet
-            IMPL_MANIFEST="${TRACE_STORE}/${IMPL_TRACE}/manifest.json"
-            IMPL_STATUS=$(jq -r '.status // "unknown"' "$IMPL_MANIFEST" 2>/dev/null || echo "unknown")
-            if [[ "$IMPL_STATUS" == "active" ]]; then
-                deny "Cannot dispatch tester: implementer trace '$IMPL_TRACE' is still active. Wait for the implementer to return before verifying."
-            fi
+    IMPL_TRACE=$(detect_active_trace "$PROJECT_ROOT" "implementer" 2>/dev/null || echo "")
+    if [[ -n "$IMPL_TRACE" ]]; then
+        # Active trace means implementer hasn't returned yet
+        IMPL_MANIFEST="${TRACE_STORE}/${IMPL_TRACE}/manifest.json"
+        IMPL_STATUS=$(jq -r '.status // "unknown"' "$IMPL_MANIFEST" 2>/dev/null || echo "unknown")
+        if [[ "$IMPL_STATUS" == "active" ]]; then
+            deny "Cannot dispatch tester: implementer trace '$IMPL_TRACE' is still active. Wait for the implementer to return before verifying."
         fi
     fi
 fi
@@ -83,7 +85,6 @@ fi
 # --- Gate C: Implementer dispatch activates proof gate ---
 # Creates .proof-status = needs-verification when implementer is dispatched.
 # This activates Gate A — Guardian will be blocked until verification completes.
-# Meta-repo (~/.claude) is exempt.
 #
 # Also writes .active-worktree-path breadcrumb when a linked worktree exists.
 # The tester agent runs inside the worktree and writes its proof-status there.
@@ -96,39 +97,35 @@ fi
 # @status accepted
 # @rationale Sacred Practice #2 states feature work must happen in worktrees, never on
 #   main. Enforcing this at dispatch time (before the agent starts) prevents agents from
-#   accidentally writing source files to main. The meta-repo (~/.claude) is exempt per
-#   the "small fixes OK on main" note in CLAUDE.md. Without this gate, an orchestrator
+#   accidentally writing source files to main. Without this gate, an orchestrator
 #   that forgets to create a worktree silently allows main to be dirtied — discovered
 #   only after the fact. Early denial is always better than late recovery.
+#   The gate now applies universally — ~/.claude follows the same governance as any project.
 if [[ "$AGENT_TYPE" == "implementer" ]]; then
-    if ! is_claude_meta_repo "$PROJECT_ROOT"; then
-        # Gate C.1: Block implementer on main/master (Sacred Practice #2).
-        # Meta-repo is exempt (already excluded by outer is_claude_meta_repo check).
-        CURRENT_BRANCH=$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
-        if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
-            deny "Cannot dispatch implementer on '$CURRENT_BRANCH' branch. Sacred Practice #2: create a worktree first. Use: git worktree add .worktrees/<name> -b feature/<name>"
-        fi
+    # Gate C.1: Block implementer on main/master (Sacred Practice #2).
+    CURRENT_BRANCH=$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+    if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
+        deny "Cannot dispatch implementer on '$CURRENT_BRANCH' branch. Sacred Practice #2: create a worktree first. Use: git worktree add .worktrees/<name> -b feature/<name>"
+    fi
 
-        # Gate C.2: Activate proof gate — creates .proof-status = needs-verification.
-        # This activates Gate A, blocking Guardian until verification completes.
-        PROOF_FILE="${CLAUDE_DIR}/.proof-status"
-        # Only activate if no proof flow is already active
-        if [[ ! -f "$PROOF_FILE" ]]; then
-            mkdir -p "$(dirname "$PROOF_FILE")"
-            echo "needs-verification|$(date +%s)" > "$PROOF_FILE"
-        fi
+    # Gate C.2: Activate proof gate — creates .proof-status = needs-verification.
+    # This activates Gate A, blocking Guardian until verification completes.
+    PROOF_FILE="${CLAUDE_DIR}/.proof-status"
+    if [[ ! -f "$PROOF_FILE" ]]; then
+        mkdir -p "$(dirname "$PROOF_FILE")"
+        echo "needs-verification|$(date +%s)" > "$PROOF_FILE"
+    fi
 
-        # Write breadcrumb: detect the most recent worktree (excluding main).
-        # git worktree list --porcelain outputs blocks separated by blank lines;
-        # the first block is always the main worktree. We capture the last
-        # non-main worktree path seen in the output.
-        ACTIVE_WORKTREE=$(git -C "$PROJECT_ROOT" worktree list --porcelain 2>/dev/null \
-            | awk -v main="$PROJECT_ROOT" '/^worktree /{path=$2} path && path != main {last=path} END{print last}' \
-            || echo "")
-        if [[ -n "$ACTIVE_WORKTREE" && -d "$ACTIVE_WORKTREE" ]]; then
-            echo "$ACTIVE_WORKTREE" > "${CLAUDE_DIR}/.active-worktree-path"
-            log_info "TASK-TRACK" "Breadcrumb written: active worktree is $ACTIVE_WORKTREE"
-        fi
+    # Write breadcrumb: detect the most recent worktree (excluding main).
+    # git worktree list --porcelain outputs blocks separated by blank lines;
+    # the first block is always the main worktree. We capture the last
+    # non-main worktree path seen in the output.
+    ACTIVE_WORKTREE=$(git -C "$PROJECT_ROOT" worktree list --porcelain 2>/dev/null \
+        | awk -v main="$PROJECT_ROOT" '/^worktree /{path=$2} path && path != main {last=path} END{print last}' \
+        || echo "")
+    if [[ -n "$ACTIVE_WORKTREE" && -d "$ACTIVE_WORKTREE" ]]; then
+        echo "$ACTIVE_WORKTREE" > "${CLAUDE_DIR}/.active-worktree-path"
+        log_info "TASK-TRACK" "Breadcrumb written: active worktree is $ACTIVE_WORKTREE"
     fi
 fi
 

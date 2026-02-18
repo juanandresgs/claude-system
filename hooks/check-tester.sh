@@ -46,12 +46,6 @@ if [[ -f "$PROOF_FILE" ]]; then
     PROOF_STATUS=$(cut -d'|' -f1 "$PROOF_FILE")
 fi
 
-# Meta-repo exemption: .proof-status is never created for ~/.claude
-# (task-track.sh Gate C exempts meta-repos). Treat as pending for auto-verify.
-if [[ "$PROOF_STATUS" == "missing" ]] && is_claude_meta_repo "$PROJECT_ROOT"; then
-    PROOF_STATUS="pending"
-fi
-
 # Extract response text early — needed for auto-verify
 RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.response // .result // .output // empty' 2>/dev/null || echo "")
 
@@ -139,8 +133,8 @@ write_statusline_cache "$PROJECT_ROOT"
 
 ISSUES=()
 
-# Check 1b: Flag missing .proof-status (for non-meta-repo)
-if [[ "$PROOF_STATUS" == "missing" ]] && ! is_claude_meta_repo "$PROJECT_ROOT"; then
+# Check 1b: Flag missing .proof-status
+if [[ "$PROOF_STATUS" == "missing" ]]; then
     ISSUES+=("Tester returned without writing .proof-status — verification evidence not collected")
 fi
 
