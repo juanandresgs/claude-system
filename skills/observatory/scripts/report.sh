@@ -105,6 +105,10 @@ if [[ -f "$STATE_FILE" ]]; then
     DEFERRED_COUNT=$(jq '.deferred | length' "$STATE_FILE" 2>/dev/null || echo "0")
 fi
 
+# --- Cohort regression data (DEC-OBS-021) ---
+REGRESSION_COUNT=$(jq '[.cohort_regressions // [] | .[] | select(.regression == true)] | length' \
+    "$CACHE_FILE" 2>/dev/null || echo "0")
+
 # --- Matrix data ---
 MATRIX_SIGNAL_COUNT=$(jq '.matrix | length' "$MATRIX_FILE" 2>/dev/null || echo "0")
 QUICK_WIN_COUNT=$(jq '.effort_buckets.quick_wins | length' "$MATRIX_FILE" 2>/dev/null || echo "0")
@@ -122,6 +126,31 @@ cat << HEADER
 
 ---
 
+HEADER
+
+# Regression Alerts section — only emitted when regressions are present
+if [[ "$REGRESSION_COUNT" -gt 0 ]]; then
+    echo "## Regression Alerts"
+    echo ""
+    echo "> **${REGRESSION_COUNT} previously-implemented signal(s) are still triggering on new traces.**"
+    echo "> The fix was merged but the issue persists. These have been re-proposed with \`regression: true\`."
+    echo ""
+    echo "| Signal | Cohort Traces | Still Affected | Rate |"
+    echo "|--------|--------------|----------------|------|"
+    jq -c '.cohort_regressions[] | select(.regression == true)' "$CACHE_FILE" 2>/dev/null | \
+    while IFS= read -r reg; do
+        R_SIG=$(echo "$reg" | jq -r '.signal_id')
+        R_SIZE=$(echo "$reg" | jq -r '.cohort_size')
+        R_AFF=$(echo "$reg" | jq -r '.cohort_affected')
+        R_RATE=$(jq -n "if $R_SIZE > 0 then ($R_AFF / $R_SIZE * 100 | round) else 0 end" 2>/dev/null || echo "?")
+        echo "| ${R_SIG} | ${R_SIZE} new traces | ${R_AFF} (${R_RATE}%) | regression |"
+    done
+    echo ""
+    echo "---"
+    echo ""
+fi
+
+cat << HEALTH_HEADER
 ## System Health Summary
 
 | Metric | Value |
@@ -146,7 +175,7 @@ cat << HEADER
 
 ## Signal Landscape
 
-HEADER
+HEALTH_HEADER
 
 # Build the signal table from comparison matrix
 if [[ "$MATRIX_SIGNAL_COUNT" -gt 0 ]]; then

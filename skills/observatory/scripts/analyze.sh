@@ -49,6 +49,20 @@
 #             agent_type_plan_count}, stale_markers top-level object,
 #             artifact_health.proof_unknown_count.
 #
+# @decision DEC-OBS-021
+# @title Stage 5 cohort regression detection against post-implementation traces
+# @status accepted
+# @rationale Implemented signals are normally suppressed. But if the fix was
+#             ineffective, new traces will still trigger the same signal —
+#             creating a silent regression that nobody sees. Stage 5 filters
+#             index.jsonl to only traces with started_at > implemented_at for
+#             each implemented signal that has a timestamp. If cohort_size >= 10
+#             and cohort_affected / cohort_size > 0.5, the signal is marked as
+#             a regression in cohort_regressions[]. suggest.sh reads this field
+#             to re-propose the signal with regression=true. Signals from v1/v2
+#             state (no implemented_at timestamp) are skipped — backwards
+#             compatible with pre-v3 state files.
+#
 # Output: ~/.claude/observatory/analysis-cache.json
 #         ~/.claude/observatory/analysis-cache.prev.json (previous run snapshot)
 # Usage: bash skills/observatory/scripts/analyze.sh
@@ -504,7 +518,91 @@ if [[ "$CRASH_CLUSTER_COUNT" -gt 0 ]]; then
         }]')
 fi
 
-# --- Stage 5: Assemble and write output ---
+# --- Stage 5: Cohort regression detection (DEC-OBS-021) ---
+# For each implemented signal with an implemented_at timestamp, filter the
+# trace index to only post-implementation traces and re-evaluate the signal's
+# evidence gate. Records cohort_size, cohort_affected, and regression flag.
+# Signals with no timestamp (legacy v1/v2 format) are skipped silently.
+
+# check_cohort_regression <signal_id> <implemented_at>
+# Outputs: "<cohort_size>|<cohort_affected>"
+check_cohort_regression() {
+    local signal_id="$1"
+    local implemented_at="$2"
+
+    # Single-pass aggregation of post-implementation cohort stats
+    local cohort_stats
+    cohort_stats=$(jq -sc --arg since "$implemented_at" '
+        [.[] | select(.started_at != null and .started_at > $since)] |
+        {
+            cohort_size: length,
+            test_unknown:   (map(select(.test_result == "unknown")) | length),
+            files_zero:     (map(select(.files_changed == 0 or .files_changed == null)) | length),
+            bad_duration:   (map(select(.duration_seconds != null and .duration_seconds <= 0)) | length),
+            main_impl:      (map(select(.agent_type == "implementer" and (.branch == "main" or .branch == "master"))) | length),
+            branch_unknown: (map(select(.branch == "unknown")) | length),
+            agent_type_plan:(map(select(.agent_type == "Plan")) | length),
+            partial_outcome:(map(select(.outcome == "partial")) | length)
+        }
+    ' "$TRACE_INDEX" 2>/dev/null || echo '{"cohort_size":0}')
+
+    local cohort_size cohort_affected
+    cohort_size=$(echo "$cohort_stats" | jq '.cohort_size // 0')
+
+    case "$signal_id" in
+        SIG-TEST-UNKNOWN)        cohort_affected=$(echo "$cohort_stats" | jq '.test_unknown // 0') ;;
+        SIG-FILES-ZERO)          cohort_affected=$(echo "$cohort_stats" | jq '.files_zero // 0') ;;
+        SIG-DURATION-BUG)        cohort_affected=$(echo "$cohort_stats" | jq '.bad_duration // 0') ;;
+        SIG-MAIN-IMPL)           cohort_affected=$(echo "$cohort_stats" | jq '.main_impl // 0') ;;
+        SIG-BRANCH-UNKNOWN)      cohort_affected=$(echo "$cohort_stats" | jq '.branch_unknown // 0') ;;
+        SIG-AGENT-TYPE-MISMATCH) cohort_affected=$(echo "$cohort_stats" | jq '.agent_type_plan // 0') ;;
+        SIG-OUTCOME-FLAT)
+            # Partial-outcome regression uses the same >50% threshold as the signal itself
+            local partial total_c
+            partial=$(echo "$cohort_stats" | jq '.partial_outcome // 0')
+            total_c="$cohort_size"
+            # Only affected if partial > 50% of cohort
+            cohort_affected=$(jq -n \
+                --argjson p "$partial" --argjson t "$total_c" \
+                'if $t > 0 and ($p / $t) > 0.5 then $p else 0 end' 2>/dev/null || echo "0")
+            ;;
+        *)                       cohort_affected=0 ;;
+    esac
+
+    echo "${cohort_size}|${cohort_affected}"
+}
+
+COHORT_REGRESSIONS="[]"
+
+if [[ -f "$STATE_FILE" ]]; then
+    # Process only object-format implemented entries (have signal_id + implemented_at)
+    while IFS= read -r entry; do
+        [[ -z "$entry" || "$entry" == "null" ]] && continue
+        signal_id=$(echo "$entry" | jq -r '.signal_id // empty' 2>/dev/null)
+        impl_at=$(echo "$entry" | jq -r '.implemented_at // empty' 2>/dev/null)
+        sug_id=$(echo "$entry" | jq -r '.sug_id // empty' 2>/dev/null)
+
+        # Skip entries without a timestamp or signal_id (legacy format)
+        [[ -z "$signal_id" || "$signal_id" == "null" ]] && continue
+        [[ -z "$impl_at"   || "$impl_at"   == "null" ]] && continue
+
+        result=$(check_cohort_regression "$signal_id" "$impl_at")
+        c_size="${result%%|*}"
+        c_affected="${result##*|}"
+
+        # Regression: cohort >= 10 AND affected > 50% of cohort
+        if [[ "$c_size" -ge 10 ]] && (( c_affected * 2 > c_size )); then
+            COHORT_REGRESSIONS=$(echo "$COHORT_REGRESSIONS" | jq \
+                --arg sig "$signal_id" \
+                --arg sug "$sug_id" \
+                --argjson size "$c_size" \
+                --argjson affected "$c_affected" \
+                '. + [{"signal_id": $sig, "sug_id": $sug, "cohort_size": $size, "cohort_affected": $affected, "regression": true}]')
+        fi
+    done < <(jq -c '.implemented[] | select(type == "object")' "$STATE_FILE" 2>/dev/null || true)
+fi
+
+# --- Stage 6: Assemble and write output ---
 GENERATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 # Build stale_markers summary object for top-level output
@@ -522,13 +620,15 @@ jq -cn \
     --argjson trends "$TRENDS" \
     --argjson agent_breakdown "$AGENT_BREAKDOWN" \
     --argjson stale_markers "$STALE_MARKERS_OBJ" \
+    --argjson cohort_regressions "$COHORT_REGRESSIONS" \
     '{
-      version: 2,
+      version: 3,
       generated_at: $generated_at,
       trace_stats: $trace_stats,
       artifact_health: $artifact_health,
       self_metrics: $self_metrics,
       improvement_signals: $signals,
+      cohort_regressions: $cohort_regressions,
       trends: $trends,
       agent_breakdown: $agent_breakdown,
       stale_markers: $stale_markers
