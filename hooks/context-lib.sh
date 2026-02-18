@@ -658,7 +658,14 @@ finalize_trace() {
         local start_epoch
         start_epoch=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$started_at" +%s 2>/dev/null || date -u -d "$started_at" +%s 2>/dev/null || echo "0")
         local now_epoch
-        now_epoch=$(date +%s)
+        # @decision DEC-OBS-DURATION-001
+        # @title Use date -u +%s for now_epoch to match start_epoch UTC parsing
+        # @status accepted
+        # @rationale start_epoch is parsed with date -u (UTC). now_epoch uses plain
+        #   date +%s which is epoch seconds (UTC) on most systems, but adding -u
+        #   makes the intent explicit and prevents negative durations in environments
+        #   where date +%s behavior differs from UTC. Issue #90.
+        now_epoch=$(date -u +%s)
         if [[ "$start_epoch" -gt 0 ]]; then
             duration=$(( now_epoch - start_epoch ))
         fi
@@ -736,10 +743,26 @@ finalize_trace() {
     fi
 
     # Determine overall outcome
+    # @decision DEC-OBS-OUTCOME-001
+    # @title Expand outcome classification with timeout and skipped states
+    # @status accepted
+    # @rationale The original three-outcome model (success/failure/partial) collapsed
+    #   two distinct failure modes into "partial": (1) agents that ran long but produced
+    #   nothing (timeout), and (2) traces with no artifacts at all (skipped/crashed before
+    #   writing anything). Distinguishing these enables the observatory to surface
+    #   actionable signals — timeout patterns indicate agent loops; skipped patterns
+    #   indicate hook or dispatch failures. Order matters: timeout check uses duration
+    #   which is already computed; skipped checks the artifacts dir existence.
     if [[ "$test_result" == "pass" ]]; then
         outcome="success"
     elif [[ "$test_result" == "fail" ]]; then
         outcome="failure"
+    elif [[ "$duration" -gt 600 && "$test_result" == "unknown" ]]; then
+        outcome="timeout"
+    elif [[ ! -d "${trace_dir}/artifacts" ]]; then
+        outcome="skipped"
+    elif [[ -z "$(ls -A "${trace_dir}/artifacts" 2>/dev/null)" ]]; then
+        outcome="skipped"
     else
         outcome="partial"
     fi
@@ -780,11 +803,15 @@ finalize_trace() {
         fi
     fi
 
-    # Check if summary exists; if not, it's likely a crash
+    # Check if summary exists; if not, it's likely a crash.
+    # Do not override "skipped" — skipped means no artifacts at all (never started),
+    # which is a distinct state from crashed (started but failed to produce summary.md).
     local trace_status="completed"
     if [[ ! -f "${trace_dir}/summary.md" ]]; then
         trace_status="crashed"
-        outcome="crashed"
+        if [[ "$outcome" != "skipped" ]]; then
+            outcome="crashed"
+        fi
     fi
 
     # Update manifest with jq (merge new fields)
