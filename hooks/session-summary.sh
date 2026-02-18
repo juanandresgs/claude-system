@@ -27,6 +27,14 @@ fi
 PROJECT_ROOT=$(detect_project_root)
 CLAUDE_DIR=$(get_claude_dir)
 
+# Re-finalize stale traces from this session (catches late-arriving artifacts).
+# Bounded to last 4 hours to avoid rescanning ancient traces on every Stop.
+# Wrapped in set +e because refinalize_stale_traces always returns 0 but
+# sub-calls (jq, date) may exit non-zero on malformed manifests.
+set +e
+refinalize_stale_traces 4 >/dev/null 2>&1
+set -e
+
 # Find session tracking file
 SESSION_ID="${CLAUDE_SESSION_ID:-}"
 CHANGES=""

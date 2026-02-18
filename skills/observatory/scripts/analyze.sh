@@ -91,6 +91,34 @@ if [[ -f "$CACHE_FILE" ]]; then
     cp "$CACHE_FILE" "$PREV_CACHE_FILE"
 fi
 
+# --- Pre-Stage: Re-finalize stale traces and rebuild index ---
+# Ensures observatory analyzes accurate data by correcting manifests where
+# artifacts arrived after initial finalization, then rebuilding the index.
+# log.sh must be sourced before context-lib.sh (provides get_claude_dir()).
+# Guarded with set +e so a malformed manifest doesn't abort the analysis run.
+#
+# @decision DEC-REFINALIZE-004
+# @title Pre-stage re-finalization before Observatory analysis
+# @status accepted
+# @rationale analyze.sh reads index.jsonl which was written at SubagentStop time,
+#   before agents finish writing artifacts. Running refinalize_stale_traces() here
+#   corrects stale manifests (test_result=unknown, files_changed=0) and rebuilds
+#   the index so Stage 1 stats reflect the true artifact state. The rebuild is
+#   skipped when no traces were updated to avoid unnecessary I/O on clean runs.
+if [[ -f "${CLAUDE_DIR}/hooks/log.sh" && -f "${CLAUDE_DIR}/hooks/context-lib.sh" ]]; then
+    set +e
+    # shellcheck source=/dev/null
+    source "${CLAUDE_DIR}/hooks/log.sh"
+    # shellcheck source=/dev/null
+    source "${CLAUDE_DIR}/hooks/context-lib.sh"
+    REFINALIZED=$(refinalize_stale_traces 2>/dev/null || echo "0")
+    if [[ "${REFINALIZED:-0}" -gt 0 ]]; then
+        rebuild_index 2>/dev/null || true
+        echo "Pre-stage: re-finalized ${REFINALIZED} trace(s), rebuilt index"
+    fi
+    set -e
+fi
+
 # --- Stage 1: Trace index stats (single-pass jq) ---
 # Includes v2 fields: main_impl_count, branch_unknown_count, agent_type_plan_count
 TRACE_STATS=$(jq -sc '
