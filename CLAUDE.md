@@ -118,13 +118,32 @@ When code and plan diverge: **HOW** divergence (algorithm, library) → code win
 | `agents/guardian.md` | Committing, merging, branch management |
 | `hooks/HOOKS.md` | Understanding hook behavior, debugging hooks, @decision format |
 | `README.md` | Full system overview, directory map, all hooks/skills/commands |
+| `ARCHITECTURE.md` | System architecture, subsystem reference, design decisions |
+| `observatory/` | Understanding observatory analysis, suggestion lifecycle |
 
 ## Commands & Skills
 
+**Commands** (lightweight, no context fork):
 - `/compact` — Context preservation before compaction
 - `/backlog` — Unified backlog: list, create, close, triage todos (GitHub Issues). No args = list; `/backlog <text>` = create; `/backlog done <#>` = close
-- **Research**: `deep-research`, `last30days`
-- **Workflow**: `context-preservation`
+- `/approve` — Quick-approve verification gate
+
+**Skills — Governance:**
+- `observatory` — Self-improving flywheel: analyze traces, surface signals, suggest improvements
+- `diagnose` — System health check: hook integrity, state file consistency, configuration validation
+- `rewind` — List and restore checkpoints created by checkpoint.sh
+- `uplevel` — Six-dimensional repository health audit
+
+**Skills — Research:**
+- `deep-research` — Multi-model synthesis (OpenAI + Perplexity + Gemini)
+- `last30days` — Recent community discussions with engagement metrics
+- `consume-content` — Structured content analysis and extraction
+- `generate-paper-snapshot` — Academic paper analysis and summarization
+
+**Skills — Workflow:**
+- `context-preservation` — Structured summaries for session continuity
+- `decide` — Interactive decision configurator with trade-off exploration
+- `prd` — Deep-dive product requirement documents
 
 ## Web Fetching
 

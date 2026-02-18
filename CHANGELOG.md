@@ -8,15 +8,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Observatory System** — Self-improving flywheel: trace analysis, signal extraction, improvement suggestions with cohort-based regression detection (`observatory/`, `skills/observatory/`)
+- **Tester Agent** — Fourth agent for end-to-end verification with auto-verify fast path (`agents/tester.md`, `hooks/check-tester.sh`)
+- **Checkpoint System** — Git ref-based snapshots before writes with `/rewind` restore skill (`hooks/checkpoint.sh`, `skills/rewind/`)
+- **CWD Recovery** — Three-path system for worktree deletion CWD death spiral: directed recovery (Check 0.5 Path A), canary-based recovery (Path B), prevention (Check 0.75) in `guard.sh`
+- **Cross-Session Learning** — Session-aware hooks with trajectory guidance, friction pattern detection (v2 Phase 4)
+- **Session Summaries in Commits** — Structured session context embedded in commit metadata (v2 Phase 2)
+- **Session-Aware Hooks** — Trajectory-based guidance, compaction-safe resume directives (v2 Phase 3)
+- **SDLC Integrity Layer** — Guard hardening, state hygiene, preflight checks (Phase A)
+- **Tester Completeness Gate** — Check 3 in check-tester.sh validates verification coverage
+- **Deterministic Comparison Matrix** — Deep-research two-pass matching with content-based analysis
+- **Environment Variable Handoff** — Implementer-to-tester environment variable propagation
+- **/diagnose Skill** — System health checks integrated into agent pipeline
+- **/approve Command** — Quick-approve verification gate
+- **Guard Check 0.75** — Subshell containment for `cd` into `.worktrees/` directories
 - Security policy (SECURITY.md) with vulnerability reporting guidelines
 - Changelog following Keep a Changelog format
 - Standards compliance documentation
-
-### Fixed
-- README documentation for `update-check.sh` location (lives in `scripts/`, called by `session-init.sh`)
+- ARCHITECTURE.md comprehensive technical reference (this release)
 
 ### Changed
+- **Auto-verify restructured** — Runs before heavy I/O for faster verification path
+- **Observatory assessment overhaul** — Comprehensive reports, comparison matrix, deferred lifecycle management
+- **Observatory signal catalog** — Extended from 5 to 12 signals across 4 categories
+- **Session-init performance** — Startup latency reduced from 2-10s to 0.3-2s with 4 targeted fixes
+- **Guardian auto-cleans worktrees** after merge instead of delegating to user
+- **Deep-research matrix matching** — Simplified to heading-only with LLM unmatched_hints
 - GitHub Actions now pin to commit SHAs for supply chain security
+- Guard rewrite calls converted to deny — `updatedInput` not supported in PreToolUse hooks
+
+### Fixed
+- Observatory SUG-ID instability across runs (force state v1→v3 migration)
+- Observatory duration UTC timezone bug in finalize_trace
+- Guard long-form force-deletion variant detection in branch guard
+- Check 5 worktree-remove crash on paths with spaces
+- Proof-status path mismatch in git worktree scenarios
+- Verification gate: escape hatch, empty-prompt awareness, env whitelist
+- Tester AND logic for completeness gate + finalize_trace verification fallback
+- Post-compaction amnesia with computed resume directives
+- Meta-repo exemption for guard.sh proof-status deletion check
+- Subagent tracker scoped to per-session thread
+- Hook library race condition during git merge (session-scoped caching)
+- Cross-platform stat for Linux CI (4 trace contract test failures)
+- Shellcheck failures: tilde bug + expanded exclusions
+- README documentation for `update-check.sh` location (lives in `scripts/`, called by `session-init.sh`)
+- Observatory .test-status fallback to finalize_trace test result detection
+
+### Security
+- Cross-project git guard prevents accidental operations on wrong repositories
+- Credential exposure protection via `.env` read deny rules
 
 ## [2.0.0] - 2026-02-08
 
