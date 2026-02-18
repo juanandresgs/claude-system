@@ -359,6 +359,10 @@ cmd_cleanup() {
             cd "$main_wt" || cd "$HOME"
         fi
 
+        # Write CWD recovery canary before deletion so Check 0.5 Path B can
+        # recover the orchestrator's Bash tool CWD on the next command.
+        echo "$path" > "$HOME/.claude/.cwd-recovery-needed" 2>/dev/null || true
+
         # Remove via git worktree remove (from main worktree for safety)
         if (cd "$main_wt" && git worktree remove "$path" 2>/dev/null); then
             removed=$((removed + 1))
