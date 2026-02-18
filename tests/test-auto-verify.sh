@@ -314,6 +314,53 @@ else
     fail_test "prompt-submit.sh has syntax errors"
 fi
 
+# ---------------------------------------------------------------------------
+# Test 7: Timing — auto-verify critical path completes within budget
+# ---------------------------------------------------------------------------
+run_test "Timing: check-tester.sh auto-verify path completes in <5s"
+
+# detect_project_root() uses git --git-common-dir to find the real repo root,
+# resolving through worktrees. For ~/.claude worktrees, common-dir is ~/.claude/.git
+# so the real root is ~/.claude. We temporarily set .proof-status to "pending"
+# so the hook exercises the auto-verify path, then restore it after.
+COMMON_DIR=$(git -C "$PROJECT_ROOT" rev-parse --git-common-dir 2>/dev/null || echo "")
+if [[ -n "$COMMON_DIR" && "$COMMON_DIR" != /* ]]; then
+    COMMON_DIR=$(cd "$PROJECT_ROOT" && cd "$COMMON_DIR" && pwd)
+fi
+REAL_REPO_ROOT="${COMMON_DIR%/.git}"
+if [[ -z "$REAL_REPO_ROOT" ]]; then
+    REAL_REPO_ROOT="$PROJECT_ROOT"
+fi
+REAL_PROOF_FILE="$REAL_REPO_ROOT/.claude/.proof-status"
+SAVED_PROOF=""
+if [[ -f "$REAL_PROOF_FILE" ]]; then
+    SAVED_PROOF=$(cat "$REAL_PROOF_FILE")
+fi
+echo "pending|$(date +%s)" > "$REAL_PROOF_FILE"
+
+# Build JSON input with AUTOVERIFY: CLEAN response (no heredoc — avoids control chars)
+AV_RESP="### Verification Assessment\n### Confidence Level\n**High** - All core paths exercised.\n### Coverage\n| Area | Status |\n|------|--------|\n| Core | Fully verified |\nAUTOVERIFY: CLEAN"
+MOCK_JSON=$(printf '{"response": "%s"}' "$(echo -e "$AV_RESP" | sed 's/"/\\"/g')")
+
+# Time execution
+START_TIME=$(date +%s)
+echo "$MOCK_JSON" | bash "$HOOKS_DIR/check-tester.sh" > /dev/null 2>&1 || true
+END_TIME=$(date +%s)
+ELAPSED=$((END_TIME - START_TIME))
+
+# Restore .proof-status to original value
+if [[ -n "$SAVED_PROOF" ]]; then
+    echo "$SAVED_PROOF" > "$REAL_PROOF_FILE"
+else
+    rm -f "$REAL_PROOF_FILE"
+fi
+
+if [[ $ELAPSED -lt 5 ]]; then
+    pass_test
+else
+    fail_test "Hook took ${ELAPSED}s (budget: <5s)"
+fi
+
 # Summary
 echo ""
 echo "=========================================="

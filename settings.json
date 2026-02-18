@@ -285,7 +285,7 @@
           {
             "type": "command",
             "command": "$HOME/.claude/hooks/check-tester.sh",
-            "timeout": 5
+            "timeout": 15
           }
         ]
       },
@@ -295,7 +295,7 @@
           {
             "type": "command",
             "command": "$HOME/.claude/hooks/check-guardian.sh",
-            "timeout": 5
+            "timeout": 15
           }
         ]
       }
