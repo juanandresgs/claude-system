@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# SubagentStop:Explore — overflow detection and spillover-to-disk fallback.
+# SubagentStop:Explore — overflow detection, spillover-to-disk fallback, and trace finalization.
 # When Explore agents return >1200 words without writing a temp file,
 # this hook saves the overflow to disk and flags it for the orchestrator.
+# Also finalizes any active trace so explore agents do not leave orphaned traces.
 #
 # @decision DEC-EXPLORE-STOP-001
 # @title Explore SubagentStop overflow-to-disk fallback
@@ -14,6 +15,16 @@
 #   and flags it. SubagentStop cannot truncate the return — the blast
 #   has already happened — but the temp file provides recovery for
 #   future sessions and the flag alerts the orchestrator.
+#
+# @decision DEC-EXPLORE-STOP-002
+# @title Add trace finalization to check-explore.sh
+# @status accepted
+# @rationale Explore agents use init_trace/finalize_trace like other agent types,
+#   but check-explore.sh previously never called finalize_trace. This caused explore
+#   traces to remain permanently "active" in the trace store (orphaned). Adding
+#   finalize_trace here ensures explore traces are sealed at SubagentStop time,
+#   consistent with implementer, planner, and tester handlers. If detect_active_trace
+#   returns empty (no trace was initialized), we log to audit rather than error.
 set -euo pipefail
 
 source "$(dirname "$0")/source-lib.sh"
@@ -27,6 +38,25 @@ CLAUDE_DIR=$(get_claude_dir)
 # Track subagent completion
 track_subagent_stop "$PROJECT_ROOT" "explore"
 append_session_event "agent_stop" "{\"type\":\"explore\"}" "$PROJECT_ROOT"
+
+# --- Trace protocol: finalize active explore trace ---
+# Runs before overflow-detection logic to avoid timeout races.
+# If no active trace exists, log to audit (not an error — explore agents don't
+# always use the trace protocol, especially for quick lookups).
+TRACE_ID=$(detect_active_trace "$PROJECT_ROOT" "explore" 2>/dev/null || echo "")
+if [[ -n "$TRACE_ID" ]]; then
+    TRACE_DIR_PATH="${TRACE_STORE}/${TRACE_ID}"
+    # Auto-write summary.md from response text if agent didn't write it
+    EXPLORE_RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.response // .result // .output // empty' 2>/dev/null || echo "")
+    if [[ ! -f "$TRACE_DIR_PATH/summary.md" && -n "$EXPLORE_RESPONSE_TEXT" ]]; then
+        echo "$EXPLORE_RESPONSE_TEXT" | head -c 4000 > "$TRACE_DIR_PATH/summary.md" 2>/dev/null || true
+    fi
+    if ! finalize_trace "$TRACE_ID" "$PROJECT_ROOT" "explore"; then
+        append_audit "$PROJECT_ROOT" "trace_orphan" "finalize_trace failed for explore trace $TRACE_ID"
+    fi
+else
+    append_audit "$PROJECT_ROOT" "trace_orphan" "detect_active_trace returned empty for explore — no trace to finalize"
+fi
 
 ISSUES=()
 

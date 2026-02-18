@@ -1106,12 +1106,72 @@ refinalize_trace() {
         outcome="crashed"
     fi
 
+    # --- Status repair: transition stuck "active" traces to "completed" ---
+    # Orphaned traces (where finalize_trace was never called) keep status="active"
+    # indefinitely. If a trace has been "active" for more than 30 minutes, we
+    # assume the agent is gone and transition it to "completed" with an estimated
+    # finished_at. This does not affect traces that already have status="completed"
+    # or "crashed".
+    #
+    # @decision DEC-REFINALIZE-007
+    # @title Repair orphaned active status in refinalize_trace
+    # @status accepted
+    # @rationale Three bug sources leave traces permanently "active":
+    #   1. check-explore.sh and check-general-purpose.sh (no finalize_trace call)
+    #   2. Timeout races where finalize_trace is reached too late in the 5s budget
+    #   3. Agent crashes before SubagentStop fires
+    #   All three leave status="active" with no finished_at. Running refinalize_trace
+    #   retrospectively can detect these orphans (>30 min old, still active) and
+    #   transition them to "completed" so they appear correctly in reports and
+    #   don't inflate active-agent counts. finished_at is estimated from the latest
+    #   artifact mtime or started_at + duration_seconds when available.
+    local cur_status
+    cur_status=$(jq -r '.status // "unknown"' "$manifest" 2>/dev/null)
+    local new_status="$cur_status"
+    local new_finished_at=""
+
+    if [[ "$cur_status" == "active" ]]; then
+        local now_epoch_rf
+        now_epoch_rf=$(date -u +%s)
+        local start_epoch_rf=0
+        if [[ -n "$cur_started_at" ]]; then
+            start_epoch_rf=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$cur_started_at" +%s 2>/dev/null \
+                || date -u -d "$cur_started_at" +%s 2>/dev/null \
+                || echo "0")
+        fi
+        local orphan_threshold=1800  # 30 minutes
+        if [[ "$start_epoch_rf" -gt 0 && \
+              $(( now_epoch_rf - start_epoch_rf )) -gt "$orphan_threshold" ]]; then
+            new_status="completed"
+            # Estimate finished_at: try latest artifact mtime, then started_at + duration
+            local estimated_end=0
+            if [[ -d "${trace_dir}/artifacts" ]]; then
+                local latest_artifact
+                latest_artifact=$(ls -t "${trace_dir}/artifacts/" 2>/dev/null | head -1)
+                if [[ -n "$latest_artifact" ]]; then
+                    estimated_end=$(stat -f '%m' "${trace_dir}/artifacts/${latest_artifact}" 2>/dev/null \
+                        || stat -c '%Y' "${trace_dir}/artifacts/${latest_artifact}" 2>/dev/null \
+                        || echo "0")
+                fi
+            fi
+            if [[ "$estimated_end" -eq 0 && "$duration" -gt 0 ]]; then
+                estimated_end=$(( start_epoch_rf + duration ))
+            fi
+            if [[ "$estimated_end" -gt 0 ]]; then
+                new_finished_at=$(date -u -r "$estimated_end" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+                    || date -u -d "@${estimated_end}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+                    || echo "")
+            fi
+        fi
+    fi
+
     # --- Check if anything actually changed ---
     local changed=false
     [[ "$test_result" != "$cur_test_result" ]] && changed=true
     [[ "$files_changed" != "$cur_files_changed" ]] && changed=true
     [[ "$duration" != "$cur_duration" ]] && changed=true
     [[ "$outcome" != "$cur_outcome" ]] && changed=true
+    [[ "$new_status" != "$cur_status" ]] && changed=true
 
     if ! $changed; then
         return 1
@@ -1119,16 +1179,33 @@ refinalize_trace() {
 
     # --- Atomic manifest update ---
     local tmp_manifest="${manifest}.tmp"
-    jq --argjson duration "$duration" \
-       --arg test_result "$test_result" \
-       --argjson files_changed "$files_changed" \
-       --arg outcome "$outcome" \
-       '. + {
+    local jq_args=(
+        --argjson duration "$duration"
+        --arg test_result "$test_result"
+        --argjson files_changed "$files_changed"
+        --arg outcome "$outcome"
+        --arg new_status "$new_status"
+    )
+    local jq_expr='. + {
          duration_seconds: $duration,
          test_result: $test_result,
          files_changed: $files_changed,
-         outcome: $outcome
-       }' "$manifest" > "$tmp_manifest" 2>/dev/null && mv "$tmp_manifest" "$manifest"
+         outcome: $outcome,
+         status: $new_status
+       }'
+    # Only inject finished_at if we computed one (avoid overwriting existing value)
+    if [[ -n "$new_finished_at" ]]; then
+        jq_args+=(--arg new_finished_at "$new_finished_at")
+        jq_expr='. + {
+         duration_seconds: $duration,
+         test_result: $test_result,
+         files_changed: $files_changed,
+         outcome: $outcome,
+         status: $new_status,
+         finished_at: $new_finished_at
+       }'
+    fi
+    jq "${jq_args[@]}" "$jq_expr" "$manifest" > "$tmp_manifest" 2>/dev/null && mv "$tmp_manifest" "$manifest"
 
     return 0
 }
