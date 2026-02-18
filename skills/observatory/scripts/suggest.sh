@@ -135,6 +135,72 @@ SIGNAL_METADATA=$(cat << 'METADATA_EOF'
     "test": "Run implementer with TRACE_DIR set. Verify artifacts/ dir is created and summary.md exists after completion.",
     "depends_on": [],
     "unlocks": []
+  },
+  "SIG-MAIN-IMPL": {
+    "title": "Block implementer dispatch on main/master branch in task-track.sh",
+    "desc": "Implementer agents ran on main/master branch instead of a feature worktree, violating Sacred Practice #2. The task-track.sh PreToolUse:Task gate should reject implementer dispatch when the current branch is main or master.",
+    "complexity": "medium",
+    "blast": "multi",
+    "files": ["agents/implementer.md", "hooks/task-track.sh"],
+    "approach": "Add branch check to task-track.sh PreToolUse:Task gate — reject implementer dispatch when on main/master unless override flag set",
+    "test": "Dispatch implementer on main branch without override. Verify task-track.sh blocks it.",
+    "depends_on": [],
+    "unlocks": []
+  },
+  "SIG-BRANCH-UNKNOWN": {
+    "title": "Use 'no-git' fallback branch name in init_trace() for non-git directories",
+    "desc": "Traces with branch='unknown' indicate git metadata capture failed. Using 'no-git' as a fallback distinguishes non-git projects from actual capture failures, enabling more accurate filtering.",
+    "complexity": "low",
+    "blast": "function",
+    "files": ["hooks/context-lib.sh"],
+    "approach": "In init_trace(), add fallback: if git rev-parse fails, set branch to 'no-git' instead of 'unknown' to distinguish non-git projects from capture failures",
+    "test": "Create trace in a non-git directory. Verify branch='no-git' in manifest.",
+    "depends_on": [],
+    "unlocks": []
+  },
+  "SIG-AGENT-TYPE-MISMATCH": {
+    "title": "Normalize agent_type 'Plan' to 'planner' in init_trace()",
+    "desc": "The Task subagent_type field uses 'Plan' (capital P) but the system expects 'planner'. This mismatch fragments agent-type analysis by splitting the same agent type into two groups.",
+    "complexity": "low",
+    "blast": "function",
+    "files": ["hooks/context-lib.sh"],
+    "approach": "In init_trace(), normalize agent_type: map 'Plan' to 'planner', 'Explore' to 'explore'. Add case statement for known mappings.",
+    "test": "Call init_trace with agent_type='Plan'. Verify manifest shows 'planner'.",
+    "depends_on": [],
+    "unlocks": ["SIG-CRASH-CLUSTER"]
+  },
+  "SIG-CRASH-CLUSTER": {
+    "title": "Investigate and fix systematic crash cluster in affected agent types",
+    "desc": "One or more agent types have >50% crash rates with sufficient sample sizes (>5 traces), indicating a systematic dispatch or prompt failure. This requires reading crashed trace summaries to identify the root cause.",
+    "complexity": "high",
+    "blast": "multi",
+    "files": ["agents/planner.md", "agents/implementer.md", "hooks/task-track.sh"],
+    "approach": "Investigate crash clusters by reading crashed trace summaries. Fix agent prompts or dispatch logic causing crashes.",
+    "test": "After fix, re-run observatory. Verify crash rate for affected agent types drops below 50%.",
+    "depends_on": ["SIG-AGENT-TYPE-MISMATCH"],
+    "unlocks": []
+  },
+  "SIG-STALE-MARKERS": {
+    "title": "Add age-based cleanup of stale .active-* markers in init_trace()",
+    "desc": "Orphaned .active-* files from crashed agents can block new agent runs with false 'agent already running' errors. Cleaning markers older than 2 hours at init time prevents this.",
+    "complexity": "low",
+    "blast": "function",
+    "files": ["hooks/context-lib.sh"],
+    "approach": "Add age-based cleanup: in init_trace(), remove any .active-* markers older than 2 hours before creating a new one",
+    "test": "Create a stale .active-* marker older than 2 hours. Run init_trace. Verify stale marker is cleaned up.",
+    "depends_on": [],
+    "unlocks": []
+  },
+  "SIG-PROOF-UNKNOWN": {
+    "title": "Propagate project .proof-status to trace manifest in finalize_trace()",
+    "desc": "Most trace manifests have proof_status='unknown' because finalize_trace() only checks a trace-scoped file that rarely exists. Reading the project-scoped .proof-status file would capture the actual verification state.",
+    "complexity": "medium",
+    "blast": "function",
+    "files": ["hooks/context-lib.sh"],
+    "approach": "In finalize_trace(), when proof_status is 'unknown', try reading the last known proof status from the session's .proof-status file relative to project root",
+    "test": "Create trace with .proof-status=verified in project root. Run finalize_trace. Verify proof_status='verified' in manifest.",
+    "depends_on": [],
+    "unlocks": []
   }
 }
 METADATA_EOF
@@ -206,11 +272,19 @@ while IFS= read -r signal; do
         *)        BLAST_F="0.8"  ;;
     esac
 
-    # category_weight
+    # category_weight — higher weight = higher strategic priority
+    # data_quality: foundational (must fix first for any analysis to be valid)
+    # workflow_compliance: Sacred Practice enforcement (high business value)
+    # trace_completeness: coverage (important but secondary)
+    # agent_performance: operational health (meaningful but narrower impact)
+    # trace_infrastructure: plumbing (low blast, background fix)
     case "$CATEGORY" in
-        data_quality)       CAT_W="1.0" ;;
-        trace_completeness) CAT_W="0.9" ;;
-        *)                  CAT_W="0.8" ;;
+        data_quality)         CAT_W="1.0" ;;
+        workflow_compliance)  CAT_W="0.85" ;;
+        trace_completeness)   CAT_W="0.9" ;;
+        agent_performance)    CAT_W="0.75" ;;
+        trace_infrastructure) CAT_W="0.7" ;;
+        *)                    CAT_W="0.8" ;;
     esac
 
     # Base priority = (affected/total × sev) × (complexity × blast) × cat_weight

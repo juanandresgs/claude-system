@@ -19,12 +19,12 @@
 # @decision DEC-OBS-007
 # @title Hardcoded signal detection with evidence thresholds
 # @status accepted
-# @rationale The 5 signals are known root causes from code inspection, not
-#             discovered dynamically. Hardcoding them with evidence thresholds
-#             (affected_count > 0) means: signals only appear when the data
-#             confirms the bug, and disappear once fixed. This is correct
-#             behavior for a self-improving system — the signals document known
-#             bugs until the bugs are gone.
+# @rationale Signals are known root causes from code inspection, not discovered
+#             dynamically. Hardcoding them with evidence thresholds (affected_count > 0)
+#             means signals only appear when the data confirms the bug, and disappear
+#             once fixed. This is correct behavior for a self-improving system —
+#             the signals document known bugs until the bugs are gone.
+#             Extended from 5 to 12 signals in v2 (DEC-OBS-017).
 #
 # @decision DEC-OBS-013
 # @title Temporal trends via analysis-cache.prev.json snapshot
@@ -35,6 +35,19 @@
 #             This costs one extra file write but gives the report meaningful
 #             trend arrows without any external state. If no prev exists
 #             (first run), trends are null (not an error).
+#
+# @decision DEC-OBS-017
+# @title 7 new signals across 3 new categories (v2 extension)
+# @status accepted
+# @rationale Extended from 5 signals (data_quality/trace_completeness) to 12
+#             signals across 5 categories. New categories: workflow_compliance
+#             (Sacred Practice violations), agent_performance (crash clusters,
+#             stale markers), trace_infrastructure (proof_status capture gaps).
+#             Stage 2b added for stale marker detection (file-system scan).
+#             Stage 4c crash cluster analysis uses agent_breakdown output.
+#             New fields: trace_stats.{main_impl_count,branch_unknown_count,
+#             agent_type_plan_count}, stale_markers top-level object,
+#             artifact_health.proof_unknown_count.
 #
 # Output: ~/.claude/observatory/analysis-cache.json
 #         ~/.claude/observatory/analysis-cache.prev.json (previous run snapshot)
@@ -65,6 +78,7 @@ if [[ -f "$CACHE_FILE" ]]; then
 fi
 
 # --- Stage 1: Trace index stats (single-pass jq) ---
+# Includes v2 fields: main_impl_count, branch_unknown_count, agent_type_plan_count
 TRACE_STATS=$(jq -sc '
   {
     total: length,
@@ -80,7 +94,10 @@ TRACE_STATS=$(jq -sc '
     ),
     files_changed_zero_count: (map(select(.files_changed == 0)) | length),
     negative_duration_count: (map(select(.duration_seconds < 0)) | length),
-    zero_duration_count: (map(select(.duration_seconds == 0)) | length)
+    zero_duration_count: (map(select(.duration_seconds == 0)) | length),
+    main_impl_count: (map(select(.agent_type == "implementer" and (.branch == "main" or .branch == "master"))) | length),
+    branch_unknown_count: (map(select(.branch == "unknown")) | length),
+    agent_type_plan_count: (map(select(.agent_type == "Plan")) | length)
   }
 ' "$TRACE_INDEX" 2>/dev/null)
 
@@ -89,6 +106,10 @@ FILES_ZERO=$(echo "$TRACE_STATS" | jq '.files_changed_zero_count')
 NEG_DUR=$(echo "$TRACE_STATS" | jq '.negative_duration_count')
 ZERO_DUR=$(echo "$TRACE_STATS" | jq '.zero_duration_count')
 BAD_DUR=$((NEG_DUR + ZERO_DUR))
+# v2 workflow_compliance counts
+MAIN_IMPL_COUNT=$(echo "$TRACE_STATS" | jq '.main_impl_count')
+BRANCH_UNKNOWN_COUNT=$(echo "$TRACE_STATS" | jq '.branch_unknown_count')
+AGENT_TYPE_PLAN_COUNT=$(echo "$TRACE_STATS" | jq '.agent_type_plan_count')
 
 # Compute percentage of zero files_changed
 FILES_ZERO_PCT=$(jq -n "$FILES_ZERO / $TOTAL * 100" 2>/dev/null || echo "0")
@@ -103,11 +124,13 @@ TRACE_STATS=$(echo "$TRACE_STATS" | jq \
     '. + {files_changed_zero_pct: ($pct | round * 10 / 10)}')
 
 # --- Stage 2: Artifact health (scan actual trace dirs) ---
+# Includes proof_unknown_count for SIG-PROOF-UNKNOWN detection
 TOTAL_TRACE_DIRS=0
 SUMMARY_EXISTS=0
 TEST_OUTPUT_EXISTS=0
 DIFF_EXISTS=0
 FILES_CHANGED_EXISTS=0
+PROOF_UNKNOWN=0
 
 while IFS= read -r trace_dir; do
     artifacts_dir="${trace_dir}/artifacts"
@@ -116,6 +139,13 @@ while IFS= read -r trace_dir; do
     [[ -f "${artifacts_dir}/test-output.txt" ]] && (( TEST_OUTPUT_EXISTS++ )) || true
     [[ -f "${artifacts_dir}/diff.patch" ]] && (( DIFF_EXISTS++ )) || true
     [[ -f "${artifacts_dir}/files-changed.txt" ]] && (( FILES_CHANGED_EXISTS++ )) || true
+    # Count traces where proof_status is unknown or missing
+    if [[ -f "${trace_dir}/manifest.json" ]]; then
+        local_proof=$(jq -r '.proof_status // "missing"' "${trace_dir}/manifest.json" 2>/dev/null || echo "missing")
+        if [[ "$local_proof" == "unknown" || "$local_proof" == "missing" ]]; then
+            (( PROOF_UNKNOWN++ )) || true
+        fi
+    fi
 done < <(find "$TRACE_STORE" -maxdepth 1 -mindepth 1 -type d ! -name '.git' 2>/dev/null | sort)
 
 # Compute completeness rates
@@ -136,8 +166,10 @@ ARTIFACT_HEALTH=$(jq -cn \
     --argjson test_out "$TEST_RATE" \
     --argjson diff "$DIFF_RATE" \
     --argjson files "$FILES_RATE" \
+    --argjson proof_unknown "$PROOF_UNKNOWN" \
     '{
       total_traces: $total,
+      proof_unknown_count: $proof_unknown,
       completeness: {
         "summary.md": ($summary | . * 100 | round / 100),
         "test-output.txt": ($test_out | . * 100 | round / 100),
@@ -145,6 +177,23 @@ ARTIFACT_HEALTH=$(jq -cn \
         "files-changed.txt": ($files | . * 100 | round / 100)
       }
     }')
+
+# --- Stage 2b: Stale marker detection ---
+# .active-* files in TRACE_STORE are created by init_trace() and should be
+# removed by finalize_trace(). Orphaned markers cause false "agent already running"
+# blocks and indicate crash scenarios where cleanup didn't run.
+STALE_MARKER_COUNT=0
+STALE_MARKERS="[]"
+while IFS= read -r marker_file; do
+    [[ -z "$marker_file" ]] && continue
+    (( STALE_MARKER_COUNT++ )) || true
+    marker_name=$(basename "$marker_file")
+    marker_age=$(( $(date +%s) - $(stat -f %m "$marker_file" 2>/dev/null || echo "0") ))
+    STALE_MARKERS=$(echo "$STALE_MARKERS" | jq \
+        --arg name "$marker_name" \
+        --argjson age "$marker_age" \
+        '. + [{"name": $name, "age_seconds": $age}]')
+done < <(find "$TRACE_STORE" -maxdepth 1 -name '.active-*' -type f 2>/dev/null)
 
 # --- Stage 3: Self-metrics from state.json ---
 SELF_METRICS='{"total_suggestions": 0, "implemented": 0, "rejected": 0, "acceptance_rate": null}'
@@ -251,6 +300,92 @@ if (( TOTAL_TRACE_DIRS > 0 )) && \
         }]')
 fi
 
+# --- Stage 4 (v2): Workflow compliance signals ---
+
+# SIG-MAIN-IMPL: implementer agents on main/master branch (Sacred Practice #2)
+if [[ "$MAIN_IMPL_COUNT" -gt 0 ]]; then
+    SIGNALS=$(echo "$SIGNALS" | jq \
+        --argjson affected "$MAIN_IMPL_COUNT" \
+        --argjson total "$TOTAL" \
+        '. + [{
+          "id": "SIG-MAIN-IMPL",
+          "category": "workflow_compliance",
+          "severity": "high",
+          "description": "Implementer agents running on main/master branch instead of worktrees — Sacred Practice #2 violation",
+          "evidence": {"affected_count": $affected, "total": $total},
+          "root_cause": "Implementer dispatched without creating a worktree first"
+        }]')
+fi
+
+# SIG-BRANCH-UNKNOWN: traces where branch capture failed (git not available)
+if [[ "$BRANCH_UNKNOWN_COUNT" -gt 0 ]]; then
+    SIGNALS=$(echo "$SIGNALS" | jq \
+        --argjson affected "$BRANCH_UNKNOWN_COUNT" \
+        --argjson total "$TOTAL" \
+        '. + [{
+          "id": "SIG-BRANCH-UNKNOWN",
+          "category": "workflow_compliance",
+          "severity": "low",
+          "description": "Traces with branch='\''unknown'\'' — git metadata not captured at trace creation",
+          "evidence": {"affected_count": $affected, "total": $total},
+          "root_cause": "init_trace() doesn'\''t capture branch when project isn'\''t a git repo or git rev-parse fails"
+        }]')
+fi
+
+# SIG-AGENT-TYPE-MISMATCH: "Plan" (capital P) instead of normalized "planner"
+if [[ "$AGENT_TYPE_PLAN_COUNT" -gt 0 ]]; then
+    SIGNALS=$(echo "$SIGNALS" | jq \
+        --argjson affected "$AGENT_TYPE_PLAN_COUNT" \
+        --argjson total "$TOTAL" \
+        '. + [{
+          "id": "SIG-AGENT-TYPE-MISMATCH",
+          "category": "workflow_compliance",
+          "severity": "medium",
+          "description": "Agent type '\''Plan'\'' used instead of '\''planner'\'' — inconsistent naming fragments analysis",
+          "evidence": {"affected_count": $affected, "total": $total},
+          "root_cause": "Task subagent_type='\''Plan'\'' not normalized to '\''planner'\'' in init_trace()"
+        }]')
+fi
+
+# --- Stage 4 (v2): Agent performance signals ---
+
+# SIG-STALE-MARKERS: orphaned .active-* marker files
+if [[ "$STALE_MARKER_COUNT" -gt 0 ]]; then
+    SIGNALS=$(echo "$SIGNALS" | jq \
+        --argjson affected "$STALE_MARKER_COUNT" \
+        --argjson total "$TOTAL" \
+        --argjson markers "$STALE_MARKERS" \
+        '. + [{
+          "id": "SIG-STALE-MARKERS",
+          "category": "agent_performance",
+          "severity": "low",
+          "description": "Orphaned .active-* marker files left by crashed agents — can cause false '\''agent already running'\'' blocks",
+          "evidence": {"affected_count": $affected, "total": $total, "stale_markers": $markers},
+          "root_cause": "finalize_trace() cleanup path not reached when agents crash or are killed"
+        }]')
+fi
+
+# --- Stage 4 (v2): Trace infrastructure signals ---
+
+# SIG-PROOF-UNKNOWN: >80% of trace manifests have proof_status unknown/missing
+# Only emit when we have enough traces to make a meaningful assessment
+PROOF_UNKNOWN_PCT=$(jq -n "if $TOTAL_TRACE_DIRS > 0 then $PROOF_UNKNOWN / $TOTAL_TRACE_DIRS else 0 end" 2>/dev/null || echo "0")
+# Threshold: >= 0.8 (80% or more unknown = systemic capture failure)
+if (( TOTAL_TRACE_DIRS > 0 )) && \
+   [[ $(jq -n "$PROOF_UNKNOWN_PCT >= 0.8" 2>/dev/null) == "true" ]]; then
+    SIGNALS=$(echo "$SIGNALS" | jq \
+        --argjson affected "$PROOF_UNKNOWN" \
+        --argjson total "$TOTAL_TRACE_DIRS" \
+        '. + [{
+          "id": "SIG-PROOF-UNKNOWN",
+          "category": "trace_infrastructure",
+          "severity": "medium",
+          "description": "proof_status not tracked in most traces — verification gate state lost",
+          "evidence": {"affected_count": $affected, "total": $total},
+          "root_cause": "finalize_trace() checks .proof-status file but most traces don'\''t have one because the file is project-scoped, not trace-scoped"
+        }]')
+fi
+
 # --- Stage 4b: Temporal trends (compare with previous run) ---
 # If analysis-cache.prev.json exists, compute deltas to detect trends.
 TRENDS="null"
@@ -333,8 +468,50 @@ AGENT_BREAKDOWN=$(jq -sc '
   sort_by(-.count)
 ' "$TRACE_INDEX" 2>/dev/null || echo "[]")
 
+# --- Stage 4d: SIG-CRASH-CLUSTER — agent types with >50% crash rate AND >5 traces ---
+# Uses AGENT_BREAKDOWN computed above. Must run after Stage 4c.
+CRASH_CLUSTER_COUNT=0
+CRASH_CLUSTER_AGENTS="[]"
+if [[ "$AGENT_BREAKDOWN" != "[]" ]]; then
+    CRASH_CLUSTER_AGENTS=$(echo "$AGENT_BREAKDOWN" | jq '[
+        .[] |
+        select(.count > 5) |
+        select(
+            (.outcome_dist.crashed // 0) / .count > 0.5
+        ) |
+        {
+            agent_type,
+            count,
+            crashed: (.outcome_dist.crashed // 0),
+            crash_rate: ((.outcome_dist.crashed // 0) / .count * 100 | round)
+        }
+    ]' 2>/dev/null || echo "[]")
+    CRASH_CLUSTER_COUNT=$(echo "$CRASH_CLUSTER_AGENTS" | jq 'length' 2>/dev/null || echo "0")
+fi
+
+if [[ "$CRASH_CLUSTER_COUNT" -gt 0 ]]; then
+    SIGNALS=$(echo "$SIGNALS" | jq \
+        --argjson affected "$CRASH_CLUSTER_COUNT" \
+        --argjson total "$TOTAL" \
+        --argjson agents "$CRASH_CLUSTER_AGENTS" \
+        '. + [{
+          "id": "SIG-CRASH-CLUSTER",
+          "category": "agent_performance",
+          "severity": "high",
+          "description": "Agent types with >50% crash rate — indicates systematic failure in agent dispatch or prompt",
+          "evidence": {"affected_count": $affected, "total": $total, "crash_cluster_agents": $agents},
+          "root_cause": "Certain agent types consistently crash — likely prompt issues, missing env vars, or improper dispatch"
+        }]')
+fi
+
 # --- Stage 5: Assemble and write output ---
 GENERATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+# Build stale_markers summary object for top-level output
+STALE_MARKERS_OBJ=$(jq -cn \
+    --argjson count "$STALE_MARKER_COUNT" \
+    --argjson details "$STALE_MARKERS" \
+    '{"count": $count, "details": $details}')
 
 jq -cn \
     --arg generated_at "$GENERATED_AT" \
@@ -344,6 +521,7 @@ jq -cn \
     --argjson signals "$SIGNALS" \
     --argjson trends "$TRENDS" \
     --argjson agent_breakdown "$AGENT_BREAKDOWN" \
+    --argjson stale_markers "$STALE_MARKERS_OBJ" \
     '{
       version: 2,
       generated_at: $generated_at,
@@ -352,7 +530,8 @@ jq -cn \
       self_metrics: $self_metrics,
       improvement_signals: $signals,
       trends: $trends,
-      agent_breakdown: $agent_breakdown
+      agent_breakdown: $agent_breakdown,
+      stale_markers: $stale_markers
     }' > "$CACHE_FILE"
 
 SIG_COUNT=$(echo "$SIGNALS" | jq 'length')
