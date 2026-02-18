@@ -2,9 +2,10 @@
 # analyze.sh — Observatory Stage 1: trace analysis → analysis-cache.json
 #
 # Purpose: Read trace data from multiple sources and produce a structured
-#          analysis-cache.json with data quality signals. This is the
-#          foundation of the self-improving flywheel — bad data quality here
-#          is itself the first signal to fix.
+#          analysis-cache.json with data quality signals, temporal trends,
+#          and agent-type breakdowns. This is the foundation of the self-
+#          improving flywheel — bad data quality here is itself the first
+#          signal to fix.
 #
 # @decision DEC-OBS-006
 # @title Single-pass jq aggregation for trace stats
@@ -25,7 +26,18 @@
 #             behavior for a self-improving system — the signals document known
 #             bugs until the bugs are gone.
 #
+# @decision DEC-OBS-013
+# @title Temporal trends via analysis-cache.prev.json snapshot
+# @status accepted
+# @rationale Before overwriting analysis-cache.json, copy it to
+#             analysis-cache.prev.json. Stage 4b then diffs current vs prev
+#             to produce signal_count_delta and per-signal affected deltas.
+#             This costs one extra file write but gives the report meaningful
+#             trend arrows without any external state. If no prev exists
+#             (first run), trends are null (not an error).
+#
 # Output: ~/.claude/observatory/analysis-cache.json
+#         ~/.claude/observatory/analysis-cache.prev.json (previous run snapshot)
 # Usage: bash skills/observatory/scripts/analyze.sh
 
 set -euo pipefail
@@ -36,6 +48,7 @@ TRACE_INDEX="${CLAUDE_DIR}/traces/index.jsonl"
 TRACE_STORE="${CLAUDE_DIR}/traces"
 OBS_DIR="${OBS_DIR:-${WORKTREE_DIR}/observatory}"
 CACHE_FILE="${OBS_DIR}/analysis-cache.json"
+PREV_CACHE_FILE="${OBS_DIR}/analysis-cache.prev.json"
 STATE_FILE="${STATE_FILE:-${OBS_DIR}/state.json}"
 
 # --- Preflight ---
@@ -44,6 +57,11 @@ mkdir -p "$OBS_DIR"
 if [[ ! -f "$TRACE_INDEX" ]]; then
     echo "ERROR: Trace index not found at $TRACE_INDEX" >&2
     exit 1
+fi
+
+# Snapshot previous analysis for trend tracking (Stage 4b)
+if [[ -f "$CACHE_FILE" ]]; then
+    cp "$CACHE_FILE" "$PREV_CACHE_FILE"
 fi
 
 # --- Stage 1: Trace index stats (single-pass jq) ---
@@ -233,6 +251,88 @@ if (( TOTAL_TRACE_DIRS > 0 )) && \
         }]')
 fi
 
+# --- Stage 4b: Temporal trends (compare with previous run) ---
+# If analysis-cache.prev.json exists, compute deltas to detect trends.
+TRENDS="null"
+if [[ -f "$PREV_CACHE_FILE" ]]; then
+    PREV_SIG_COUNT=$(jq '.improvement_signals | length' "$PREV_CACHE_FILE" 2>/dev/null || echo "0")
+    CURR_SIG_COUNT=$(echo "$SIGNALS" | jq 'length')
+    SIG_DELTA=$((CURR_SIG_COUNT - PREV_SIG_COUNT))
+
+    # Determine trend direction
+    if [[ "$SIG_DELTA" -lt 0 ]]; then
+        SIG_TREND="improving"
+    elif [[ "$SIG_DELTA" -gt 0 ]]; then
+        SIG_TREND="worsening"
+    else
+        SIG_TREND="stable"
+    fi
+
+    PREV_TOTAL=$(jq '.trace_stats.total // 0' "$PREV_CACHE_FILE" 2>/dev/null || echo "0")
+    TRACE_DELTA=$((TOTAL - PREV_TOTAL))
+
+    # Per-signal affected-count deltas: did affected counts go up or down?
+    PER_SIGNAL_TRENDS=$(echo "$SIGNALS" | jq \
+        --slurpfile prev <(cat "$PREV_CACHE_FILE") \
+        '[.[] | {
+          id: .id,
+          current_affected: .evidence.affected_count,
+          prev_affected: (
+            ($prev[0].improvement_signals // []) |
+            map(select(.id == .id)) |
+            if length > 0 then .[0].evidence.affected_count else null end
+          ),
+          delta: (
+            .evidence.affected_count as $curr |
+            (($prev[0].improvement_signals // []) | map(select(.id == .id)) | if length > 0 then .[0].evidence.affected_count else null end) as $prev_val |
+            if $prev_val != null then ($curr - $prev_val) else null end
+          )
+        }]' 2>/dev/null || echo "[]")
+
+    # New signals since last run
+    NEW_SIGNALS=$(echo "$SIGNALS" | jq \
+        --slurpfile prev <(cat "$PREV_CACHE_FILE") \
+        '[.[] | .id] - [($prev[0].improvement_signals // []) | .[].id]' 2>/dev/null || echo "[]")
+
+    TRENDS=$(jq -cn \
+        --argjson sig_delta "$SIG_DELTA" \
+        --arg sig_trend "$SIG_TREND" \
+        --argjson trace_delta "$TRACE_DELTA" \
+        --argjson per_signal "$PER_SIGNAL_TRENDS" \
+        --argjson new_signals "$NEW_SIGNALS" \
+        '{
+          signal_count_delta: $sig_delta,
+          signal_trend: $sig_trend,
+          trace_count_delta: $trace_delta,
+          per_signal: $per_signal,
+          new_signals: $new_signals
+        }')
+fi
+
+# --- Stage 4c: Agent-type breakdown ---
+# Aggregate traces by agent_type field (if present in index entries).
+# Not all entries have agent_type — those without are grouped as "unknown".
+AGENT_BREAKDOWN=$(jq -sc '
+  group_by(.agent_type // "unknown") |
+  map({
+    agent_type: (.[0].agent_type // "unknown"),
+    count: length,
+    outcome_dist: (
+      group_by(.outcome) |
+      map({key: (.[0].outcome // "unknown"), value: length}) |
+      from_entries
+    ),
+    artifact_rate: (
+      (map(select(.files_changed != null and .files_changed > 0)) | length) / length
+    ),
+    avg_duration: (
+      [.[] | select(.duration_seconds != null and .duration_seconds > 0) | .duration_seconds] |
+      if length > 0 then (add / length | . * 10 | round / 10) else null end
+    )
+  }) |
+  sort_by(-.count)
+' "$TRACE_INDEX" 2>/dev/null || echo "[]")
+
 # --- Stage 5: Assemble and write output ---
 GENERATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
@@ -242,13 +342,17 @@ jq -cn \
     --argjson artifact_health "$ARTIFACT_HEALTH" \
     --argjson self_metrics "$SELF_METRICS" \
     --argjson signals "$SIGNALS" \
+    --argjson trends "$TRENDS" \
+    --argjson agent_breakdown "$AGENT_BREAKDOWN" \
     '{
-      version: 1,
+      version: 2,
       generated_at: $generated_at,
       trace_stats: $trace_stats,
       artifact_health: $artifact_health,
       self_metrics: $self_metrics,
-      improvement_signals: $signals
+      improvement_signals: $signals,
+      trends: $trends,
+      agent_breakdown: $agent_breakdown
     }' > "$CACHE_FILE"
 
 SIG_COUNT=$(echo "$SIGNALS" | jq 'length')
