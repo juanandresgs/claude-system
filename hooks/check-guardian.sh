@@ -195,6 +195,14 @@ if [[ -n "$RESPONSE_TEXT" ]]; then
     fi
 fi
 
+# --- Post-guardian health check directive ---
+# Suggest /diagnose when no other agents are active (prevents concurrent dispatch crash).
+# Advisory only — injected into ISSUES array, orchestrator decides whether to invoke.
+ACTIVE_MARKERS=$(ls "$TRACE_STORE"/.active-* 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$ACTIVE_MARKERS" -eq 0 ]]; then
+    ISSUES+=("SUGGESTED ACTION: Run /diagnose to verify system health after guardian operation")
+fi
+
 # Build context message
 CONTEXT=""
 if [[ ${#ISSUES[@]} -gt 0 ]]; then

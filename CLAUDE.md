@@ -38,7 +38,8 @@ The orchestrator dispatches to specialized agents — it does NOT write source c
 | E2E verification, demos | **Tester** | No — must invoke tester |
 | Commits, merges, branches | **Guardian** | No git commit/merge/push |
 | Research, reading code | Orchestrator / Explore | Read/Grep/Glob only |
-| Editing `~/.claude/` config | Orchestrator | Small fixes only (gitignore, 1-line, typos). Features use worktrees. |
+| Post-guardian health check | Orchestrator | Invoke `/diagnose` when check-guardian.sh suggests it |
+| Editing `~/.claude/` config | Orchestrator | Trivial edits only (gitignore, 1-line, typos). Features use worktrees. |
 
 Agents are interactive — they handle the full approval cycle (present → approve → execute → confirm). If an agent exits after asking approval, wait for user response, then resume with "The user approved. Proceed."
 
@@ -80,8 +81,8 @@ When the task touches unfamiliar areas, read relevant files from the Resources t
 
 1. **Always Use Git** — Initialize or integrate with git. Save incrementally. Always be able to rollback.
 2. **Main is Sacred** — Feature work happens in git worktrees. Never write source code on main.
-   This includes `~/.claude/` — small config fixes are OK on main, but new features,
-   multi-file changes, and anything touching hooks/scripts require a worktree.
+   `~/.claude/` follows the same governance as any project. Orchestrator handles trivial
+   config edits directly (1-line, typos, gitignore); all implementer work uses worktrees.
 3. **No /tmp/** — Use `tmp/` in the project root. Don't litter the User's machine. Before deleting any directory, `cd` out of it first — deleting the shell's CWD bricks all Bash operations for the rest of the session.
    Never `cd` into a worktree directory from the orchestrator. Use `git -C <path>` instead. When a subagent deletes the worktree, the orchestrator's Bash CWD is invalidated. guard.sh Check 0.5 auto-recovers on the next Bash command.
 4. **Nothing Done Until Tested** — Tests pass before declaring completion. Can't get tests working? Stop and ask.

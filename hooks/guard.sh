@@ -303,13 +303,11 @@ fi
 # Verified status can be cleaned up freely.
 if echo "$_proof_stripped" | grep -qE 'rm\s+(-[a-zA-Z]*\s+)*\S*proof-status'; then
     _ps_dir=$(get_claude_dir)
-    if ! is_claude_meta_repo "$(detect_project_root)"; then
-        _ps_file="${_ps_dir}/.proof-status"
-        if [[ -f "$_ps_file" ]]; then
-            _ps_val=$(cut -d'|' -f1 "$_ps_file")
-            if [[ "$_ps_val" == "pending" || "$_ps_val" == "needs-verification" ]]; then
-                deny "Cannot delete .proof-status while verification is active (status: $_ps_val). Complete the verification flow first."
-            fi
+    _ps_file="${_ps_dir}/.proof-status"
+    if [[ -f "$_ps_file" ]]; then
+        _ps_val=$(cut -d'|' -f1 "$_ps_file")
+        if [[ "$_ps_val" == "pending" || "$_ps_val" == "needs-verification" ]]; then
+            deny "Cannot delete .proof-status while verification is active (status: $_ps_val). Complete the verification flow first."
         fi
     fi
 fi
@@ -492,12 +490,10 @@ if echo "$COMMAND" | grep -qE 'git[[:space:]]+[^|;&]*worktree[[:space:]]+remove'
     rewrite "$REWRITTEN" "Rewrote to cd to main worktree before removal. Prevents death spiral if Bash CWD is inside the worktree being removed."
 fi
 
-# is_claude_meta_repo is provided by context-lib.sh (shared library)
-
 # --- Check 6: Test status gate for merge commands ---
 if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bmerge([^a-zA-Z0-9-]|$)'; then
     PROJECT_ROOT=$(detect_project_root)
-    if git -C "$PROJECT_ROOT" rev-parse --git-dir > /dev/null 2>&1 && ! is_claude_meta_repo "$PROJECT_ROOT"; then
+    if git -C "$PROJECT_ROOT" rev-parse --git-dir > /dev/null 2>&1; then
         if read_test_status "$PROJECT_ROOT"; then
             if [[ "$TEST_RESULT" == "fail" && "$TEST_AGE" -lt "$TEST_STALENESS_THRESHOLD" ]]; then
                 append_session_event "gate_eval" "{\"hook\":\"guard\",\"check\":\"test_gate_merge\",\"result\":\"block\",\"reason\":\"tests failing\"}" "$PROJECT_ROOT"
@@ -516,7 +512,7 @@ fi
 # --- Check 7: Test status gate for commit commands ---
 if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bcommit([^a-zA-Z0-9-]|$)'; then
     PROJECT_ROOT=$(extract_git_target_dir "$COMMAND")
-    if git -C "$PROJECT_ROOT" rev-parse --git-dir > /dev/null 2>&1 && ! is_claude_meta_repo "$PROJECT_ROOT"; then
+    if git -C "$PROJECT_ROOT" rev-parse --git-dir > /dev/null 2>&1; then
         if read_test_status "$PROJECT_ROOT"; then
             if [[ "$TEST_RESULT" == "fail" && "$TEST_AGE" -lt "$TEST_STALENESS_THRESHOLD" ]]; then
                 append_session_event "gate_eval" "{\"hook\":\"guard\",\"check\":\"test_gate_commit\",\"result\":\"block\",\"reason\":\"tests failing\"}" "$PROJECT_ROOT"
@@ -536,7 +532,6 @@ fi
 # Requires .proof-status = "verified" before commit/merge (when gate is active).
 # Gate is only active when .proof-status file exists (created by implementer dispatch).
 # Missing file = no implementation in progress = allow (fixes bootstrap deadlock).
-# Same meta-repo exemption as test gates (no feature verification needed for config).
 #
 # Worktree fix: when the worktree's .claude/.proof-status is missing, fall back
 # to the orchestrator's CLAUDE_DIR/.proof-status. This handles the case where
@@ -548,7 +543,7 @@ if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\b(commit|merge)([^a-zA-Z0-9-]|$)'; 
     else
         PROOF_DIR=$(detect_project_root)
     fi
-    if git -C "$PROOF_DIR" rev-parse --git-dir > /dev/null 2>&1 && ! is_claude_meta_repo "$PROOF_DIR"; then
+    if git -C "$PROOF_DIR" rev-parse --git-dir > /dev/null 2>&1; then
         PROOF_FILE="${PROOF_DIR}/.claude/.proof-status"
         # Fallback: if worktree file is absent, check orchestrator's CLAUDE_DIR
         if [[ ! -f "$PROOF_FILE" ]]; then
