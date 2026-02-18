@@ -39,15 +39,27 @@ class ProviderResult:
         return asdict(self)
 
 
-def render_json(results: List[ProviderResult], topic: str) -> str:
-    """Render results as structured JSON for Claude consumption."""
+def render_json(
+    results: List[ProviderResult],
+    topic: str,
+    comparison_matrix: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Render results as structured JSON for Claude consumption.
+
+    Args:
+        results: Provider results to serialize.
+        topic: Research topic string.
+        comparison_matrix: Optional pre-built matrix dict (from ComparisonMatrix.to_dict()).
+            When present, embedded under the 'comparison_matrix' key so the
+            synthesis step can consume it without re-deriving it.
+    """
     warnings: List[str] = []
     for r in results:
         if not r.success:
             elapsed = f" (after {r.elapsed_seconds}s)" if r.elapsed_seconds else ""
             warnings.append(f"{r.provider} failed: {r.error or 'unknown error'}{elapsed}")
 
-    output = {
+    output: Dict[str, Any] = {
         "topic": topic,
         "provider_count": len(results),
         "success_count": sum(1 for r in results if r.success),
@@ -89,6 +101,10 @@ def render_json(results: List[ProviderResult], topic: str) -> str:
             "unreachable": unreachable,
             "skipped": skipped,
         }
+
+    # Embed pre-built comparison matrix when provided.
+    if comparison_matrix is not None:
+        output["comparison_matrix"] = comparison_matrix
 
     return json.dumps(output, indent=2, ensure_ascii=False)
 
