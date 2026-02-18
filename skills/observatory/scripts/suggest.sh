@@ -19,12 +19,16 @@
 #                   feasibility = complexity_factor × blast_radius_factor
 #
 # @decision DEC-OBS-009
-# @title Skip already-implemented suggestions
+# @title Skip already-implemented suggestions — with cohort regression exception
 # @status accepted
 # @rationale The state.json implemented list is checked before generating each
 #             suggestion. This prevents the flywheel from re-proposing fixes
 #             already merged. The state file is the authoritative source of
 #             what has been acted on — it persists across sessions.
+#             Exception (DEC-OBS-021): if analyze.sh cohort check detects that
+#             a signal is still triggering on post-implementation traces at >50%
+#             rate with >=10 cohort traces, it is re-proposed with regression=true.
+#             This surfaces broken fixes before they go undetected.
 #
 # @decision DEC-OBS-010
 # @title Use jq-based metadata lookup instead of bash associative arrays
@@ -207,16 +211,28 @@ METADATA_EOF
 )
 
 # --- Load already-implemented signal IDs to skip ---
+# Handles both v3 format (array of objects with sug_id/signal_id) and
+# legacy v1 format (array of strings). For objects, prefer the embedded
+# signal_id field; fall back to the suggestion file lookup if null.
 IMPLEMENTED_SIGS=""
 if [[ -f "$STATE_FILE" ]]; then
-    # Map implemented SUG-IDs back to signal IDs via existing suggestion files
+    # Normalise: extract sug_id from both string entries and object entries
     while IFS= read -r sug_id; do
-        sug_file="${SUGGESTIONS_DIR}/${sug_id}.json"
-        if [[ -f "$sug_file" ]]; then
-            sig_id=$(jq -r '.signal_id' "$sug_file" 2>/dev/null || echo "")
-            [[ -n "$sig_id" ]] && IMPLEMENTED_SIGS="${IMPLEMENTED_SIGS} ${sig_id}"
+        [[ -z "$sug_id" ]] && continue
+        # Try embedded signal_id from state (v3 format)
+        sig_id=$(jq -r --arg id "$sug_id" \
+            '.implemented[] | select(type == "object" and .sug_id == $id) | .signal_id // empty' \
+            "$STATE_FILE" 2>/dev/null | head -1)
+        # Fall back to suggestion file lookup
+        if [[ -z "$sig_id" || "$sig_id" == "null" ]]; then
+            sug_file="${SUGGESTIONS_DIR}/${sug_id}.json"
+            if [[ -f "$sug_file" ]]; then
+                sig_id=$(jq -r '.signal_id // empty' "$sug_file" 2>/dev/null || echo "")
+            fi
         fi
-    done < <(jq -r '.implemented[]' "$STATE_FILE" 2>/dev/null || true)
+        [[ -n "$sig_id" && "$sig_id" != "null" ]] && IMPLEMENTED_SIGS="${IMPLEMENTED_SIGS} ${sig_id}"
+    done < <(jq -r '.implemented[] | if type == "object" then .sug_id else . end' \
+        "$STATE_FILE" 2>/dev/null || true)
 fi
 
 # --- Compute priority scores for each signal ---
@@ -229,10 +245,22 @@ while IFS= read -r signal; do
     AFFECTED=$(echo "$signal" | jq -r '.evidence.affected_count')
     TOTAL=$(echo "$signal" | jq -r '.evidence.total')
 
-    # Skip if already implemented
+    # Skip if already implemented — unless cohort regression detected
     if echo "$IMPLEMENTED_SIGS" | grep -qw "$SIG_ID" 2>/dev/null; then
-        echo "Skipping $SIG_ID — already implemented"
-        continue
+        # Check cohort_regressions in analysis cache (DEC-OBS-021)
+        local_regression=$(jq -r --arg sig "$SIG_ID" \
+            '.cohort_regressions // [] | map(select(.signal_id == $sig and .regression == true)) | length' \
+            "$CACHE_FILE" 2>/dev/null || echo "0")
+        if [[ "$local_regression" -gt 0 ]]; then
+            echo "REGRESSION: $SIG_ID — cohort check shows fix not working on new traces, re-proposing"
+            IS_REGRESSION="true"
+            # Fall through — generate suggestion with regression flag
+        else
+            echo "Skipping $SIG_ID — already implemented (cohort clean)"
+            continue
+        fi
+    else
+        IS_REGRESSION="false"
     fi
 
     # Check if we have metadata for this signal
@@ -304,7 +332,8 @@ while IFS= read -r signal; do
         . * 1000 | round / 1000
         ')
 
-    SCORE_LIST="${SCORE_LIST}${PRIORITY}|${SIG_ID}"$'\n'
+    # Include IS_REGRESSION flag in score list so the writer loop can use it
+    SCORE_LIST="${SCORE_LIST}${PRIORITY}|${SIG_ID}|${IS_REGRESSION}"$'\n'
 done < <(jq -c '.improvement_signals[]' "$CACHE_FILE" 2>/dev/null)
 
 if [[ -z "$SCORE_LIST" ]]; then
@@ -325,8 +354,9 @@ declare -a BATCH_FILE_MAP=()   # track which files are in which batch
 declare -a BATCH_LABELS=()     # batch labels assigned so far
 NEXT_BATCH_LETTER=65           # ASCII 'A'
 
-while IFS='|' read -r PRIORITY SIG_ID; do
+while IFS='|' read -r PRIORITY SIG_ID IS_REG; do
     [[ -z "$SIG_ID" ]] && continue
+    IS_REG="${IS_REG:-false}"
 
     # Get signal data from cache
     SIGNAL=$(jq -c --arg id "$SIG_ID" '.improvement_signals[] | select(.id == $id)' "$CACHE_FILE")
@@ -377,7 +407,11 @@ while IFS='|' read -r PRIORITY SIG_ID; do
         NEXT_BATCH_LETTER=$((NEXT_BATCH_LETTER + 1))
     fi
 
-    # Write SUG-NNN.json with extended fields
+    # Convert IS_REG string to boolean for jq
+    IS_REG_BOOL="false"
+    [[ "$IS_REG" == "true" ]] && IS_REG_BOOL="true"
+
+    # Write SUG-NNN.json with extended fields (regression flag included)
     jq -cn \
         --arg id "$SUG_ID" \
         --arg signal_id "$SIG_ID" \
@@ -396,12 +430,14 @@ while IFS='|' read -r PRIORITY SIG_ID; do
         --arg batch "$BATCH_LABEL" \
         --argjson depends_on "$DEPENDS_ON" \
         --argjson unlocks "$UNLOCKS" \
+        --argjson is_regression "$IS_REG_BOOL" \
         '{
           id: $id,
           status: "proposed",
           signal_id: $signal_id,
           title: $title,
           description: $description,
+          regression: $is_regression,
           impact: {
             scope: ($affected | tostring) + " of " + ($total | tostring) + " traces (" + $scope_pct + "%)",
             severity: $severity,

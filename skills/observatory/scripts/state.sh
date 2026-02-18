@@ -15,15 +15,21 @@
 #             can override paths for testing (DEC-OBS-003 isolation approach).
 #
 # @decision DEC-OBS-011
-# @title State schema v2 — structured deferred objects
+# @title State schema v3 — structured implemented objects for cohort regression
 # @status accepted
-# @rationale v1 deferred was a plain string array (["SUG-001", ...]) which
-#             carried no reassessment metadata. v2 uses object array with
+# @rationale v1 implemented was a plain string array (["SUG-001", ...]) which
+#             carried no timestamp or signal metadata. v2 added structured deferred
+#             objects. v3 extends implemented to object array with sug_id, signal_id,
+#             and implemented_at timestamp. This enables cohort-based regression
+#             detection in analyze.sh: filter traces created after implemented_at
+#             and re-evaluate the signal's evidence gate against that cohort.
+#             Backwards compatibility: _migrate_state handles v1 string arrays for
+#             implemented (converts to objects with implemented_at: null — skipped
+#             in cohort analysis since no timestamp baseline exists).
+#             v1 deferred was also a plain string array. v2/v3 uses object array with
 #             sug_id, signal_id, deferred_at, reason, reassess_after,
 #             reassess_condition, and priority_at_deferral. Migration from
-#             v1->v2 converts the string array to minimal objects with
-#             reassess_after = deferred_at + 7 days. This preserves history
-#             while enabling the new lifecycle functions.
+#             v1->v3 converts both arrays to structured objects.
 #
 # @decision DEC-OBS-012
 # @title auto_resurface uses date comparison, not cron
@@ -60,14 +66,19 @@ _compute_future_date() {
 }
 
 # --- _migrate_state ---
-# Internal: migrate state.json from v1 to v2 schema in-place.
-# v1 deferred: ["SUG-001", ...]
-# v2 deferred: [{ sug_id, signal_id, deferred_at, reason, reassess_after, ... }]
+# Internal: migrate state.json from v1/v2 to v3 schema in-place.
+# v1 deferred:     ["SUG-001", ...] (plain strings)
+# v3 deferred:     [{ sug_id, signal_id, deferred_at, reason, reassess_after, ... }]
+# v1 implemented:  ["SUG-001", ...] (plain strings)
+# v3 implemented:  [{ sug_id, signal_id, implemented_at }]
+#
+# Legacy string implemented entries get implemented_at: null — they are excluded
+# from cohort regression analysis since no baseline timestamp exists.
 _migrate_state() {
     local version
     version=$(jq -r '.version // 1' "$STATE_FILE" 2>/dev/null || echo "1")
 
-    if [[ "$version" -lt 2 ]]; then
+    if [[ "$version" -lt 3 ]]; then
         local tmp="${STATE_FILE}.tmp"
         local now
         now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -77,7 +88,8 @@ _migrate_state() {
         jq --arg now "$now" \
            --arg reassess "$reassess_ts" \
            '
-           .version = 2 |
+           .version = 3 |
+           # Migrate deferred: strings → objects
            if (.deferred | length) > 0 and (.deferred[0] | type) == "string" then
              .deferred = [.deferred[] | {
                sug_id: .,
@@ -89,8 +101,17 @@ _migrate_state() {
                priority_at_deferral: null
              }]
            else
-             .version = 2 |
              .deferred = (.deferred // [])
+           end |
+           # Migrate implemented: strings → objects (implemented_at: null for legacy)
+           if (.implemented | length) > 0 and (.implemented[0] | type) == "string" then
+             .implemented = [.implemented[] | {
+               sug_id: .,
+               signal_id: null,
+               implemented_at: null
+             }]
+           else
+             .implemented = (.implemented // [])
            end
            ' "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
     fi
@@ -104,7 +125,7 @@ init_state() {
     if [[ ! -f "$STATE_FILE" ]]; then
         cat > "$STATE_FILE" << 'EOF'
 {
-  "version": 2,
+  "version": 3,
   "last_analysis_at": null,
   "last_analysis_trace_count": 0,
   "pending_suggestion": null,
@@ -116,7 +137,7 @@ init_state() {
 }
 EOF
     else
-        # Migrate if needed (v1 -> v2)
+        # Migrate if needed (v1/v2 -> v3)
         _migrate_state
     fi
 }
@@ -163,11 +184,33 @@ transition() {
             log_action "suggested" "{\"id\": \"$sug_id\", \"status\": \"$new_status\", \"priority\": $priority}"
             ;;
         implemented)
+            # Look up signal_id from the suggestion file (if it exists)
+            local signal_id="null"
+            local sug_file="${SUGGESTIONS_DIR}/${sug_id}.json"
+            if [[ -f "$sug_file" ]]; then
+                signal_id=$(jq -r '.signal_id // "null"' "$sug_file" 2>/dev/null || echo "null")
+                [[ "$signal_id" == "null" || -z "$signal_id" ]] && signal_id="null"
+            fi
+            local impl_ts
+            impl_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
             jq --arg id "$sug_id" \
+               --arg signal_id "$signal_id" \
+               --arg impl_ts "$impl_ts" \
                '.pending_suggestion = null | .pending_title = null | .pending_priority = null
-                | .implemented = (.implemented + [$id] | unique)' \
+                | .implemented = (
+                    # Remove any existing entry for this sug_id (dedup by sug_id)
+                    [.implemented[] | select(
+                      if type == "object" then .sug_id != $id else . != $id end
+                    )] +
+                    [{
+                      sug_id: $id,
+                      signal_id: (if $signal_id == "null" then null else $signal_id end),
+                      implemented_at: $impl_ts
+                    }]
+                  )' \
                "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
-            log_action "implemented" "{\"id\": \"$sug_id\"}"
+            log_action "implemented" "{\"id\": \"$sug_id\", \"signal_id\": \"$signal_id\"}"
             ;;
         rejected)
             jq --arg id "$sug_id" \
