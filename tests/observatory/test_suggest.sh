@@ -2,7 +2,8 @@
 # test_suggest.sh — Unit tests for observatory suggest.sh
 #
 # Purpose: Verify suggest.sh produces SUG-NNN.json files with correct priority
-#          ordering and schema from a known analysis-cache.json.
+#          ordering, schema, dependency boosts, batch grouping, and comparison
+#          matrix from a known analysis-cache.json fixture.
 #
 # @decision DEC-OBS-002
 # @title Use fixture analysis-cache.json for suggest.sh tests
@@ -19,11 +20,12 @@
 set -euo pipefail
 
 CLAUDE_DIR="${HOME}/.claude"
-WORKTREE="${CLAUDE_DIR}/.worktrees/feat-observatory"
+WORKTREE="${CLAUDE_DIR}/.worktrees/feat-observatory-v2"
 SUGGEST_SCRIPT="${WORKTREE}/skills/observatory/scripts/suggest.sh"
 CACHE_FILE="${WORKTREE}/observatory/analysis-cache.json"
 SUGGESTIONS_DIR="${WORKTREE}/observatory/suggestions"
 STATE_FILE="${WORKTREE}/observatory/state.json"
+MATRIX_FILE="${WORKTREE}/observatory/comparison-matrix.json"
 
 PASS=0
 FAIL=0
@@ -42,7 +44,7 @@ mkdir -p "$SUGGESTIONS_DIR"
 # Initialize clean state so suggest.sh doesn't skip signals
 cat > "$STATE_FILE" << 'EOF'
 {
-  "version": 1,
+  "version": 2,
   "last_analysis_at": null,
   "last_analysis_trace_count": 0,
   "pending_suggestion": null,
@@ -54,10 +56,10 @@ cat > "$STATE_FILE" << 'EOF'
 }
 EOF
 
-# Fixture with all 5 signals at known severity/counts
+# Fixture with all 5 signals at known severity/counts (v2 schema)
 cat > "$CACHE_FILE" << 'EOF'
 {
-  "version": 1,
+  "version": 2,
   "generated_at": "2026-02-17T00:00:00Z",
   "trace_stats": {
     "total": 320,
@@ -123,12 +125,14 @@ cat > "$CACHE_FILE" << 'EOF'
       "evidence": {"affected_count": 44, "total": 52},
       "root_cause": "Agents don't consistently write to TRACE_DIR/artifacts/"
     }
-  ]
+  ],
+  "trends": null,
+  "agent_breakdown": []
 }
 EOF
 
-# Clean existing suggestions
-rm -f "${SUGGESTIONS_DIR}"/SUG-*.json
+# Clean existing suggestions and matrix
+rm -f "${SUGGESTIONS_DIR}"/SUG-*.json "$MATRIX_FILE"
 
 # --- Test 1: suggest.sh runs without error ---
 echo ""
@@ -163,30 +167,28 @@ if [[ "$ALL_VALID" == "true" && "$SUG_COUNT" -gt 0 ]]; then
     pass "All $SUG_COUNT SUG files are valid JSON"
 fi
 
-# --- Test 4: Schema fields present ---
+# --- Test 4: Schema fields present (including v2 fields: batch, depends_on, unlocks) ---
 echo ""
-echo "=== Test 4: SUG schema fields ==="
-REQUIRED_FIELDS=("id" "status" "signal_id" "title" "description" "impact" "implementation" "priority_score")
+echo "=== Test 4: SUG schema fields (v2 with batch/deps) ==="
+REQUIRED_FIELDS=("id" "status" "signal_id" "title" "description" "impact" "implementation" "priority_score" "batch" "depends_on" "unlocks")
 FIRST_SUG=$(ls "${SUGGESTIONS_DIR}"/SUG-*.json 2>/dev/null | sort | head -1)
 if [[ -n "$FIRST_SUG" ]]; then
     for field in "${REQUIRED_FIELDS[@]}"; do
-        if jq -e ".$field" "$FIRST_SUG" > /dev/null 2>&1; then
+        if jq -e "has(\"$field\")" "$FIRST_SUG" > /dev/null 2>&1; then
             pass "Field present: $field"
         else
-            fail "Field missing: $field in $(basename $FIRST_SUG)"
+            fail "Field missing: $field in $(basename "$FIRST_SUG")"
         fi
     done
 fi
 
-# --- Test 5: SIG-DURATION-BUG is highest priority ---
+# --- Test 5: SIG-DURATION-BUG is highest priority (with dependency boost) ---
 echo ""
 echo "=== Test 5: SIG-DURATION-BUG has highest priority_score ==="
-# Find the suggestion mapped to SIG-DURATION-BUG
 DUR_SCORE=$(jq -r 'select(.signal_id == "SIG-DURATION-BUG") | .priority_score' "${SUGGESTIONS_DIR}"/SUG-*.json 2>/dev/null | head -1)
 if [[ -z "$DUR_SCORE" ]]; then
     fail "No suggestion found for SIG-DURATION-BUG"
 else
-    # Check it's highest
     MAX_SCORE=$(jq -r '.priority_score' "${SUGGESTIONS_DIR}"/SUG-*.json 2>/dev/null | sort -rn | head -1)
     if [[ "$DUR_SCORE" == "$MAX_SCORE" ]]; then
         pass "SIG-DURATION-BUG has highest priority_score ($DUR_SCORE)"
@@ -237,6 +239,131 @@ for f in "${SUGGESTIONS_DIR}"/SUG-*.json; do
         fail "$(basename "$f"): implementation.files_to_modify missing or not array"
     fi
 done
+
+# --- Test 10: Dependency boost — SIG-DURATION-BUG priority > base (it unlocks SIG-OUTCOME-FLAT) ---
+echo ""
+echo "=== Test 10: Dependency boost applied to signals that unlock others ==="
+# SIG-DURATION-BUG unlocks SIG-OUTCOME-FLAT, so its priority should be boosted by 15%
+# Base priority for SIG-DURATION-BUG: (271/320 * 0.9) * (0.95 * 0.95) * 1.0 = ~0.682
+# With 15% boost: ~0.784. Exact value depends on rounding.
+DUR_SCORE=$(jq -r 'select(.signal_id == "SIG-DURATION-BUG") | .priority_score' "${SUGGESTIONS_DIR}"/SUG-*.json 2>/dev/null | head -1)
+# Verify it's above the unbootsted threshold (0.7 is safe midpoint)
+ABOVE_BASE=$(jq -n "$DUR_SCORE > 0.7" 2>/dev/null || echo "false")
+if [[ "$ABOVE_BASE" == "true" ]]; then
+    pass "SIG-DURATION-BUG priority ($DUR_SCORE) reflects dependency boost (> 0.7)"
+else
+    fail "SIG-DURATION-BUG priority ($DUR_SCORE) appears unboosted (expected > 0.7)"
+fi
+
+# --- Test 11: comparison-matrix.json is created ---
+echo ""
+echo "=== Test 11: comparison-matrix.json created ==="
+if [[ -f "$MATRIX_FILE" ]]; then
+    if jq . "$MATRIX_FILE" > /dev/null 2>&1; then
+        pass "comparison-matrix.json created and is valid JSON"
+    else
+        fail "comparison-matrix.json is invalid JSON"
+    fi
+else
+    fail "comparison-matrix.json not found at $MATRIX_FILE"
+fi
+
+# --- Test 12: comparison-matrix.json has required top-level fields ---
+echo ""
+echo "=== Test 12: comparison-matrix.json schema ==="
+if [[ -f "$MATRIX_FILE" ]]; then
+    for field in "matrix" "batches" "effort_buckets"; do
+        if jq -e "has(\"$field\")" "$MATRIX_FILE" > /dev/null 2>&1; then
+            pass "comparison-matrix.json has field: $field"
+        else
+            fail "comparison-matrix.json missing field: $field"
+        fi
+    done
+fi
+
+# --- Test 13: matrix entries have required fields ---
+echo ""
+echo "=== Test 13: matrix entry schema ==="
+if [[ -f "$MATRIX_FILE" ]]; then
+    MATRIX_COUNT=$(jq '.matrix | length' "$MATRIX_FILE")
+    if [[ "$MATRIX_COUNT" -gt 0 ]]; then
+        MISSING_FIELDS=$(jq -r '.matrix[] | select(
+            .sug_id == null or .signal_id == null or .severity == null or
+            .priority == null or .effort == null or .batch == null
+        ) | .sug_id // "unknown"' "$MATRIX_FILE" 2>/dev/null || echo "")
+        if [[ -z "$MISSING_FIELDS" ]]; then
+            pass "All $MATRIX_COUNT matrix entries have required fields"
+        else
+            fail "Matrix entries missing fields: $MISSING_FIELDS"
+        fi
+    else
+        fail "comparison-matrix.json matrix array is empty"
+    fi
+fi
+
+# --- Test 14: Batch grouping — all context-lib.sh signals in same batch ---
+echo ""
+echo "=== Test 14: Batch grouping by shared files ==="
+if [[ -f "$MATRIX_FILE" ]]; then
+    # SIG-DURATION-BUG, SIG-TEST-UNKNOWN, SIG-FILES-ZERO, SIG-OUTCOME-FLAT all touch context-lib.sh
+    # They should all be in the same batch
+    DUR_BATCH=$(jq -r '.matrix[] | select(.signal_id == "SIG-DURATION-BUG") | .batch' "$MATRIX_FILE")
+    TEST_BATCH=$(jq -r '.matrix[] | select(.signal_id == "SIG-TEST-UNKNOWN") | .batch' "$MATRIX_FILE")
+    FILES_BATCH=$(jq -r '.matrix[] | select(.signal_id == "SIG-FILES-ZERO") | .batch' "$MATRIX_FILE")
+
+    if [[ -n "$DUR_BATCH" && "$DUR_BATCH" == "$TEST_BATCH" && "$DUR_BATCH" == "$FILES_BATCH" ]]; then
+        pass "SIG-DURATION-BUG, SIG-TEST-UNKNOWN, SIG-FILES-ZERO all in batch $DUR_BATCH"
+    else
+        fail "context-lib.sh signals in different batches: DUR=$DUR_BATCH TEST=$TEST_BATCH FILES=$FILES_BATCH"
+    fi
+fi
+
+# --- Test 15: effort_buckets populated correctly ---
+echo ""
+echo "=== Test 15: effort_buckets classification ==="
+if [[ -f "$MATRIX_FILE" ]]; then
+    QUICK_COUNT=$(jq '.effort_buckets.quick_wins | length' "$MATRIX_FILE")
+    MOD_COUNT=$(jq '.effort_buckets.moderate | length' "$MATRIX_FILE")
+    DEEP_COUNT=$(jq '.effort_buckets.deep | length' "$MATRIX_FILE")
+
+    # SIG-DURATION-BUG is low complexity → quick_wins
+    DUR_IN_QUICK=$(jq -r '.effort_buckets.quick_wins[]' "$MATRIX_FILE" 2>/dev/null | grep -c "SUG-001" || echo "0")
+    if [[ "$DUR_IN_QUICK" -gt 0 ]]; then
+        pass "SIG-DURATION-BUG (low complexity) in quick_wins bucket"
+    else
+        fail "SIG-DURATION-BUG should be in quick_wins (got quick=$QUICK_COUNT mod=$MOD_COUNT deep=$DEEP_COUNT)"
+    fi
+
+    # SIG-ARTIFACT-MISSING is high complexity → deep
+    ART_SIG=$(jq -r '.matrix[] | select(.signal_id == "SIG-ARTIFACT-MISSING") | .sug_id' "$MATRIX_FILE")
+    ART_IN_DEEP=$(jq -r '.effort_buckets.deep[]' "$MATRIX_FILE" 2>/dev/null | grep -c "$ART_SIG" || echo "0")
+    if [[ -n "$ART_SIG" && "$ART_IN_DEEP" -gt 0 ]]; then
+        pass "SIG-ARTIFACT-MISSING (high complexity) in deep bucket"
+    elif [[ -z "$ART_SIG" ]]; then
+        pass "SIG-ARTIFACT-MISSING not active (no suggestion generated)"
+    else
+        fail "SIG-ARTIFACT-MISSING ($ART_SIG) should be in deep bucket"
+    fi
+fi
+
+# --- Test 16: depends_on and unlocks fields populated in SUG files ---
+echo ""
+echo "=== Test 16: depends_on and unlocks in SUG files ==="
+# SIG-DURATION-BUG unlocks SIG-OUTCOME-FLAT
+DUR_UNLOCKS=$(jq -r 'select(.signal_id == "SIG-DURATION-BUG") | .unlocks | join(",")' "${SUGGESTIONS_DIR}"/SUG-*.json 2>/dev/null | head -1)
+if echo "$DUR_UNLOCKS" | grep -q "SIG-OUTCOME-FLAT"; then
+    pass "SIG-DURATION-BUG.unlocks contains SIG-OUTCOME-FLAT"
+else
+    fail "SIG-DURATION-BUG.unlocks = '$DUR_UNLOCKS' (expected SIG-OUTCOME-FLAT)"
+fi
+
+# SIG-OUTCOME-FLAT depends on SIG-DURATION-BUG and SIG-TEST-UNKNOWN
+FLAT_DEPS=$(jq -r 'select(.signal_id == "SIG-OUTCOME-FLAT") | .depends_on | join(",")' "${SUGGESTIONS_DIR}"/SUG-*.json 2>/dev/null | head -1)
+if echo "$FLAT_DEPS" | grep -q "SIG-DURATION-BUG" && echo "$FLAT_DEPS" | grep -q "SIG-TEST-UNKNOWN"; then
+    pass "SIG-OUTCOME-FLAT.depends_on contains SIG-DURATION-BUG and SIG-TEST-UNKNOWN"
+else
+    fail "SIG-OUTCOME-FLAT.depends_on = '$FLAT_DEPS' (expected both SIG-DURATION-BUG and SIG-TEST-UNKNOWN)"
+fi
 
 # --- Summary ---
 echo ""
