@@ -29,6 +29,10 @@
 #             a signal is still triggering on post-implementation traces at >50%
 #             rate with >=10 cohort traces, it is re-proposed with regression=true.
 #             This surfaces broken fixes before they go undetected.
+#             Skip logic reads signal_id directly from state v3 objects (DEC-OBS-022)
+#             — no SUG-file indirection. This makes tracking stable across
+#             suggest.sh runs that renumber SUG-NNN files. Deferred signals are
+#             also skipped until resurfaced by auto_resurface().
 #
 # @decision DEC-OBS-010
 # @title Use jq-based metadata lookup instead of bash associative arrays
@@ -210,29 +214,26 @@ SIGNAL_METADATA=$(cat << 'METADATA_EOF'
 METADATA_EOF
 )
 
-# --- Load already-implemented signal IDs to skip ---
-# Handles both v3 format (array of objects with sug_id/signal_id) and
-# legacy v1 format (array of strings). For objects, prefer the embedded
-# signal_id field; fall back to the suggestion file lookup if null.
+# --- Load already-implemented and deferred signal IDs to skip ---
+# Reads signal_id directly from v3 state objects — no SUG-file indirection
+# (DEC-OBS-022). The SUG-file fallback was removed because suggest.sh renumbers
+# SUG-NNN files on every run, making file-based lookups unreliable. After v1→v3
+# migration in init_state/_migrate_state, all entries are v3 objects with
+# signal_id resolved from the known-map. Null signal_ids are skipped silently
+# (they neither block nor pollute the implemented-signal check).
 IMPLEMENTED_SIGS=""
+DEFERRED_SIGS=""
 if [[ -f "$STATE_FILE" ]]; then
-    # Normalise: extract sug_id from both string entries and object entries
-    while IFS= read -r sug_id; do
-        [[ -z "$sug_id" ]] && continue
-        # Try embedded signal_id from state (v3 format)
-        sig_id=$(jq -r --arg id "$sug_id" \
-            '.implemented[] | select(type == "object" and .sug_id == $id) | .signal_id // empty' \
-            "$STATE_FILE" 2>/dev/null | head -1)
-        # Fall back to suggestion file lookup
-        if [[ -z "$sig_id" || "$sig_id" == "null" ]]; then
-            sug_file="${SUGGESTIONS_DIR}/${sug_id}.json"
-            if [[ -f "$sug_file" ]]; then
-                sig_id=$(jq -r '.signal_id // empty' "$sug_file" 2>/dev/null || echo "")
-            fi
-        fi
-        [[ -n "$sig_id" && "$sig_id" != "null" ]] && IMPLEMENTED_SIGS="${IMPLEMENTED_SIGS} ${sig_id}"
-    done < <(jq -r '.implemented[] | if type == "object" then .sug_id else . end' \
-        "$STATE_FILE" 2>/dev/null || true)
+    # Build from signal_id fields directly — no SUG file indirection
+    IMPLEMENTED_SIGS=$(jq -r '
+      .implemented[]? |
+      if type == "object" then .signal_id // empty else empty end
+    ' "$STATE_FILE" 2>/dev/null | tr '\n' ' ')
+
+    DEFERRED_SIGS=$(jq -r '
+      .deferred[]? |
+      if type == "object" then .signal_id // empty else empty end
+    ' "$STATE_FILE" 2>/dev/null | tr '\n' ' ')
 fi
 
 # --- Compute priority scores for each signal ---
@@ -244,6 +245,12 @@ while IFS= read -r signal; do
     SEVERITY=$(echo "$signal" | jq -r '.severity')
     AFFECTED=$(echo "$signal" | jq -r '.evidence.affected_count')
     TOTAL=$(echo "$signal" | jq -r '.evidence.total')
+
+    # Skip if currently deferred — wait for auto_resurface() to re-enable it
+    if echo "$DEFERRED_SIGS" | grep -qw "$SIG_ID" 2>/dev/null; then
+        echo "Skipping $SIG_ID — currently deferred"
+        continue
+    fi
 
     # Skip if already implemented — unless cohort regression detected
     if echo "$IMPLEMENTED_SIGS" | grep -qw "$SIG_ID" 2>/dev/null; then

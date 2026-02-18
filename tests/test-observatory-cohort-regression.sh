@@ -485,7 +485,8 @@ else
     fail "Migration lost entries: expected 2, got $IMPL_COUNT_8"
 fi
 
-# They should now be objects with implemented_at: null
+# They should now be objects with non-null implemented_at
+# (DEC-OBS-022: migration now sets approximate timestamps for cohort regression support)
 FIRST_TYPE_8=$(jq -r '.implemented[0] | type' "${ENV8}/obs/state.json" 2>/dev/null || echo "unknown")
 if [[ "$FIRST_TYPE_8" == "object" ]]; then
     pass "Migration converts string entries to objects"
@@ -493,11 +494,11 @@ else
     fail "Migration did not convert strings to objects (type=$FIRST_TYPE_8)"
 fi
 
-FIRST_IMPL_AT=$(jq -r '.implemented[0].implemented_at' "${ENV8}/obs/state.json" 2>/dev/null || echo "x")
-if [[ "$FIRST_IMPL_AT" == "null" ]]; then
-    pass "Legacy migrated entries have implemented_at=null"
+FIRST_IMPL_AT=$(jq -r '.implemented[0].implemented_at' "${ENV8}/obs/state.json" 2>/dev/null || echo "null")
+if [[ "$FIRST_IMPL_AT" != "null" && -n "$FIRST_IMPL_AT" ]]; then
+    pass "Legacy migrated entries have non-null implemented_at (approximate timestamp set)"
 else
-    fail "Legacy entries have unexpected implemented_at: '$FIRST_IMPL_AT'"
+    fail "Legacy entries have null implemented_at — expected approximate timestamp (DEC-OBS-022)"
 fi
 
 # ===========================================================

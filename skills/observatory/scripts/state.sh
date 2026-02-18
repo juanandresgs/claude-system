@@ -24,12 +24,29 @@
 #             detection in analyze.sh: filter traces created after implemented_at
 #             and re-evaluate the signal's evidence gate against that cohort.
 #             Backwards compatibility: _migrate_state handles v1 string arrays for
-#             implemented (converts to objects with implemented_at: null — skipped
-#             in cohort analysis since no timestamp baseline exists).
+#             implemented. During migration, signal_ids are resolved from a hardcoded
+#             known-map of original SUG-NNN→signal_id assignments. This is required
+#             because SUG files are renumbered on every suggest.sh run (DEC-OBS-022),
+#             making the file-based lookup unreliable. Entries not in the known-map
+#             get signal_id: null (manual cleanup needed). All migrated entries get
+#             sug_id with -legacy suffix to distinguish from future v3-native entries.
 #             v1 deferred was also a plain string array. v2/v3 uses object array with
 #             sug_id, signal_id, deferred_at, reason, reassess_after,
 #             reassess_condition, and priority_at_deferral. Migration from
 #             v1->v3 converts both arrays to structured objects.
+#
+# @decision DEC-OBS-022
+# @title SUG-ID instability — track by signal_id, not SUG-NNN
+# @status accepted
+# @rationale suggest.sh re-numbers SUG-NNN files on every run by priority order.
+#             When new signals are detected or priorities shift, SUG-001 may map
+#             to a different signal than before. Tracking implemented state by the
+#             stable signal_id (e.g. SIG-TEST-UNKNOWN) rather than the ephemeral
+#             SUG-NNN avoids silent skip failures. The migration in _migrate_state
+#             resolves historical SUG-NNN→signal_id via a hardcoded known-map,
+#             and future transition() calls record signal_id from the SUG file at
+#             implementation time. suggest.sh skip logic reads signal_id directly
+#             from state objects — no SUG-file indirection needed.
 #
 # @decision DEC-OBS-012
 # @title auto_resurface uses date comparison, not cron
@@ -72,8 +89,16 @@ _compute_future_date() {
 # v1 implemented:  ["SUG-001", ...] (plain strings)
 # v3 implemented:  [{ sug_id, signal_id, implemented_at }]
 #
-# Legacy string implemented entries get implemented_at: null — they are excluded
-# from cohort regression analysis since no baseline timestamp exists.
+# For v1 implemented entries, signal_ids are resolved from a hardcoded known-map
+# of the original SUG-NNN → signal_id assignments (DEC-OBS-022). SUG files are
+# unreliable for this because suggest.sh renumbers them on every run. Entries not
+# in the known-map receive signal_id: null. All migrated sug_ids get a -legacy
+# suffix so they can be distinguished from v3-native entries going forward.
+#
+# Approximate timestamps are set for known v1 entries (two batches from the
+# original flywheel implementation — see DEC-OBS-022). These are intentionally
+# approximate; exact times are not needed since cohort regression only needs
+# a baseline date to filter post-implementation traces.
 _migrate_state() {
     local version
     version=$(jq -r '.version // 1' "$STATE_FILE" 2>/dev/null || echo "1")
@@ -85,8 +110,24 @@ _migrate_state() {
         local reassess_ts
         reassess_ts=$(_compute_future_date 7)
 
+        # Hardcoded known v1 SUG-ID → signal_id map (DEC-OBS-022).
+        # SUG-003 (SIG-DURATION-BUG) is included for completeness even if not in v1 state —
+        # the jq lookup returns null for unknown keys so it's safe to include extra entries.
+        # macOS bash 3.2: no declare -A, so we use a jq JSON object as the map.
+        local KNOWN_V1_MAP
+        KNOWN_V1_MAP='{"SUG-001":"SIG-TEST-UNKNOWN","SUG-002":"SIG-FILES-ZERO","SUG-003":"SIG-DURATION-BUG","SUG-004":"SIG-AGENT-TYPE-MISMATCH","SUG-005":"SIG-BRANCH-UNKNOWN","SUG-006":"SIG-STALE-MARKERS"}'
+
+        # Approximate timestamps for the two original implementation batches.
+        # Batch 1 (SUG-001, SUG-002): first observatory implementation pass.
+        # Batch 2 (SUG-004, SUG-005, SUG-006): second implementation pass.
+        # SUG-003 was never in v1 state (not implemented), but map entry is harmless.
+        local IMPL_TS
+        IMPL_TS="2026-02-18T03:00:00Z"
+
         jq --arg now "$now" \
            --arg reassess "$reassess_ts" \
+           --argjson known_v1_map "$KNOWN_V1_MAP" \
+           --arg impl_ts "$IMPL_TS" \
            '
            .version = 3 |
            # Migrate deferred: strings → objects
@@ -103,12 +144,15 @@ _migrate_state() {
            else
              .deferred = (.deferred // [])
            end |
-           # Migrate implemented: strings → objects (implemented_at: null for legacy)
+           # Migrate implemented: strings → objects
+           # - sug_id gets "-legacy" suffix to distinguish from v3-native entries
+           # - signal_id resolved from hardcoded known-map (null if not found)
+           # - implemented_at set to approximate batch timestamp (not null)
            if (.implemented | length) > 0 and (.implemented[0] | type) == "string" then
              .implemented = [.implemented[] | {
-               sug_id: .,
-               signal_id: null,
-               implemented_at: null
+               sug_id: (. + "-legacy"),
+               signal_id: ($known_v1_map[.] // null),
+               implemented_at: $impl_ts
              }]
            else
              .implemented = (.implemented // [])
