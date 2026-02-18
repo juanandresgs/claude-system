@@ -8,6 +8,8 @@ Technical reference for the Claude Code hook system. For philosophy and workflow
 
 All hooks receive JSON on **stdin** and emit JSON on **stdout**. Stderr is for logging only. Exit code 0 = success. Non-zero = hook error (logged, does not block).
 
+> **Caveat — SessionEnd + stderr:** Claude Code reports SessionEnd hooks as "failed" if they produce any stderr output, even with exit code 0. Suppress stderr in SessionEnd hooks (`exec 2>/dev/null`) since diagnostic messages have no audience at session termination.
+
 ### Stdin Format
 
 ```json

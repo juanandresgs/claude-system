@@ -49,6 +49,11 @@ set -euo pipefail
 
 source "$(dirname "$0")/source-lib.sh"
 
+# Redirect stderr to /dev/null — log_info writes to stderr, and Claude Code
+# treats any stderr output from SessionEnd hooks as a failure even when exit
+# code is 0. Nobody reads diagnostic messages at session termination anyway.
+exec 2>/dev/null
+
 # Optimization: Stream input directly to jq to avoid loading potentially
 # large session history into a Bash variable (which consumes ~3-4x RAM).
 # HOOK_INPUT=$(read_input) <- removing this
