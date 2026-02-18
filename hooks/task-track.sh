@@ -89,8 +89,28 @@ fi
 # The tester agent runs inside the worktree and writes its proof-status there.
 # The breadcrumb lets resolve_proof_file() (in log.sh) find the correct path
 # so prompt-submit.sh, check-tester.sh, and guard.sh all operate on the same file.
+#
+# Gate C.1: Block implementer on main/master (Sacred Practice #2).
+# @decision DEC-TASK-GATE-001
+# @title Block implementer dispatch on main/master branch
+# @status accepted
+# @rationale Sacred Practice #2 states feature work must happen in worktrees, never on
+#   main. Enforcing this at dispatch time (before the agent starts) prevents agents from
+#   accidentally writing source files to main. The meta-repo (~/.claude) is exempt per
+#   the "small fixes OK on main" note in CLAUDE.md. Without this gate, an orchestrator
+#   that forgets to create a worktree silently allows main to be dirtied — discovered
+#   only after the fact. Early denial is always better than late recovery.
 if [[ "$AGENT_TYPE" == "implementer" ]]; then
     if ! is_claude_meta_repo "$PROJECT_ROOT"; then
+        # Gate C.1: Block implementer on main/master (Sacred Practice #2).
+        # Meta-repo is exempt (already excluded by outer is_claude_meta_repo check).
+        CURRENT_BRANCH=$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+        if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
+            deny "Cannot dispatch implementer on '$CURRENT_BRANCH' branch. Sacred Practice #2: create a worktree first. Use: git worktree add .worktrees/<name> -b feature/<name>"
+        fi
+
+        # Gate C.2: Activate proof gate — creates .proof-status = needs-verification.
+        # This activates Gate A, blocking Guardian until verification completes.
         PROOF_FILE="${CLAUDE_DIR}/.proof-status"
         # Only activate if no proof flow is already active
         if [[ ! -f "$PROOF_FILE" ]]; then
