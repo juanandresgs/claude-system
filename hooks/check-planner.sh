@@ -1,13 +1,26 @@
 #!/usr/bin/env bash
-set -euo pipefail
-
 # SubagentStop:planner — deterministic validation of planner output.
 # Replaces AI agent hook. Checks MASTER_PLAN.md exists and has required structure.
 # Advisory only (exit 0 always). Reports findings via additionalContext.
 #
-# DECISION: Deterministic planner validation. Rationale: AI agent hooks have
-# non-deterministic runtime and cascade risk. Every check here is a grep/stat
-# that completes in <1s. Status: accepted.
+# Ordering: trace finalization runs FIRST (immediately after PROJECT_ROOT detection)
+# so it completes within the 5s timeout even when git/plan state checks are slow.
+#
+# @decision DEC-PLANNER-STOP-001
+# @title Deterministic planner validation
+# @status accepted
+# @rationale AI agent hooks have non-deterministic runtime and cascade risk.
+#   Every check here is a grep/stat that completes in <1s.
+#
+# @decision DEC-PLANNER-STOP-002
+# @title Move finalize_trace before git/plan state checks to beat timeout
+# @status accepted
+# @rationale The 5s hook timeout was causing finalize_trace to be skipped when
+#   get_git_state and get_plan_status ran first and consumed most of the budget.
+#   Moving trace detection + finalization immediately after PROJECT_ROOT detection
+#   ensures the trace is sealed even when downstream advisory checks time out.
+#   Error logging via append_audit captures finalization failures for diagnosis.
+set -euo pipefail
 
 source "$(dirname "$0")/source-lib.sh"
 
@@ -22,13 +35,23 @@ PLAN="$PROJECT_ROOT/MASTER_PLAN.md"
 track_subagent_stop "$PROJECT_ROOT" "planner"
 append_session_event "agent_stop" "{\"type\":\"planner\"}" "$PROJECT_ROOT"
 
-# --- Trace protocol: detect and prepare for finalization ---
+# Extract response text early — needed for both finalization and checks
+RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.response // .result // .output // empty' 2>/dev/null || echo "")
+
+# --- Trace protocol: finalize trace (RUNS FIRST to beat timeout) ---
 TRACE_ID=$(detect_active_trace "$PROJECT_ROOT" "planner" 2>/dev/null || echo "")
 TRACE_DIR=""
 if [[ -n "$TRACE_ID" ]]; then
     TRACE_DIR="${TRACE_STORE}/${TRACE_ID}"
+    if [[ ! -f "$TRACE_DIR/summary.md" ]]; then
+        echo "$RESPONSE_TEXT" | head -c 4000 > "$TRACE_DIR/summary.md" 2>/dev/null || true
+    fi
+    if ! finalize_trace "$TRACE_ID" "$PROJECT_ROOT" "planner"; then
+        append_audit "$PROJECT_ROOT" "trace_orphan" "finalize_trace failed for planner trace $TRACE_ID"
+    fi
 fi
 
+# --- Advisory checks (run after finalize to avoid timeout races) ---
 get_git_state "$PROJECT_ROOT"
 get_plan_status "$PROJECT_ROOT"
 write_statusline_cache "$PROJECT_ROOT"
@@ -81,7 +104,6 @@ else
 fi
 
 # Check 5: Approval-loop detection — agent should not end with unanswered question
-RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.response // .result // .output // empty' 2>/dev/null || echo "")
 if [[ -n "$RESPONSE_TEXT" ]]; then
     HAS_APPROVAL_QUESTION=$(echo "$RESPONSE_TEXT" | grep -iE 'do you (approve|confirm|want me to proceed)|shall I (proceed|continue|write)|ready to (begin|start|implement)\?' || echo "")
     HAS_COMPLETION=$(echo "$RESPONSE_TEXT" | grep -iE 'plan (complete|ready|written)|MASTER_PLAN\.md (created|written|updated)|created.*issues|phases defined' || echo "")
@@ -89,14 +111,6 @@ if [[ -n "$RESPONSE_TEXT" ]]; then
     if [[ -n "$HAS_APPROVAL_QUESTION" && -z "$HAS_COMPLETION" ]]; then
         ISSUES+=("Agent ended with approval question but no plan completion confirmation — may need follow-up")
     fi
-fi
-
-# --- Trace protocol: finalize trace ---
-if [[ -n "$TRACE_ID" ]]; then
-    if [[ ! -f "$TRACE_DIR/summary.md" ]]; then
-        echo "$RESPONSE_TEXT" | head -c 4000 > "$TRACE_DIR/summary.md" 2>/dev/null || true
-    fi
-    finalize_trace "$TRACE_ID" "$PROJECT_ROOT" "planner"
 fi
 
 # Response size advisory

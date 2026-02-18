@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-set -euo pipefail
-
 # SubagentStop:implementer — deterministic validation of implementer output.
 # Checks worktree usage, @decision annotation coverage, and test status.
 # Proof-of-work verification is handled by the tester agent, not the implementer.
+#
+# Ordering: trace finalization runs FIRST (immediately after PROJECT_ROOT detection)
+# so it completes within the 5s timeout even when git/plan state checks are slow.
 #
 # @decision DEC-IMPL-STOP-001
 # @title Implementer SubagentStop without proof-of-work check
@@ -12,6 +13,16 @@ set -euo pipefail
 #   builder from judge. The implementer exits after tests pass. The tester
 #   handles live demos and user verification. This prevents the implementer
 #   from being both builder and judge of its own work.
+#
+# @decision DEC-IMPL-STOP-002
+# @title Move finalize_trace before git/plan state checks to beat timeout
+# @status accepted
+# @rationale The 5s hook timeout was causing finalize_trace to be skipped when
+#   get_git_state and get_plan_status ran first and consumed most of the budget.
+#   Moving trace detection + finalization immediately after PROJECT_ROOT detection
+#   ensures the trace is sealed even when downstream advisory checks time out.
+#   Error logging via append_audit captures finalization failures for diagnosis.
+set -euo pipefail
 
 source "$(dirname "$0")/source-lib.sh"
 
@@ -25,13 +36,56 @@ CLAUDE_DIR=$(get_claude_dir)
 track_subagent_stop "$PROJECT_ROOT" "implementer"
 append_session_event "agent_stop" "{\"type\":\"implementer\"}" "$PROJECT_ROOT"
 
-# --- Trace protocol: detect and prepare for finalization ---
+# --- Trace protocol: finalize trace (RUNS FIRST to beat timeout) ---
 TRACE_ID=$(detect_active_trace "$PROJECT_ROOT" "implementer" 2>/dev/null || echo "")
 TRACE_DIR=""
 if [[ -n "$TRACE_ID" ]]; then
     TRACE_DIR="${TRACE_STORE}/${TRACE_ID}"
 fi
 
+RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.response // .result // .output // empty' 2>/dev/null || echo "")
+
+if [[ -n "$TRACE_ID" ]]; then
+    # Fallback: if agent didn't write summary.md, save response excerpt
+    if [[ ! -f "$TRACE_DIR/summary.md" ]]; then
+        echo "$RESPONSE_TEXT" | head -c 4000 > "$TRACE_DIR/summary.md" 2>/dev/null || true
+    fi
+
+    # Auto-capture files-changed.txt if agent didn't write it.
+    # Collects unstaged diffs, staged diffs, and recent commit file names so
+    # finalize_trace() can compute files_changed > 0 even when the agent omitted
+    # the artifact. Uses || true on every git command — hook must not abort on
+    # non-git paths or failed subcommands.
+    if [[ -d "$TRACE_DIR/artifacts" && ! -f "$TRACE_DIR/artifacts/files-changed.txt" ]]; then
+        git -C "$PROJECT_ROOT" diff --name-only 2>/dev/null > "$TRACE_DIR/artifacts/files-changed.txt" || true
+        git -C "$PROJECT_ROOT" diff --cached --name-only 2>/dev/null >> "$TRACE_DIR/artifacts/files-changed.txt" || true
+        git -C "$PROJECT_ROOT" log --name-only --format="" -5 2>/dev/null >> "$TRACE_DIR/artifacts/files-changed.txt" || true
+        sort -u "$TRACE_DIR/artifacts/files-changed.txt" -o "$TRACE_DIR/artifacts/files-changed.txt" 2>/dev/null || true
+    fi
+
+    # Auto-capture test-output.txt from .test-status if agent didn't write it.
+    # .test-status format is "result|fail_count|timestamp". The capture adds a
+    # human-readable prefix so report.sh can display it as evidence text.
+    if [[ -d "$TRACE_DIR/artifacts" && ! -f "$TRACE_DIR/artifacts/test-output.txt" ]]; then
+        TS_FILE=""
+        [[ -f "${CLAUDE_DIR}/.test-status" ]] && TS_FILE="${CLAUDE_DIR}/.test-status"
+        [[ -z "$TS_FILE" && -f "$PROJECT_ROOT/.test-status" ]] && TS_FILE="$PROJECT_ROOT/.test-status"
+        [[ -z "$TS_FILE" && -f "$PROJECT_ROOT/.claude/.test-status" ]] && TS_FILE="$PROJECT_ROOT/.claude/.test-status"
+        if [[ -n "$TS_FILE" ]]; then
+            echo "# Auto-captured from .test-status at $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$TRACE_DIR/artifacts/test-output.txt"
+            cat "$TS_FILE" >> "$TRACE_DIR/artifacts/test-output.txt" 2>/dev/null || true
+            TS_RESULT=$(cut -d'|' -f1 "$TS_FILE" 2>/dev/null || echo "unknown")
+            [[ "$TS_RESULT" == "pass" ]] && echo "Tests passed" >> "$TRACE_DIR/artifacts/test-output.txt"
+            [[ "$TS_RESULT" == "fail" ]] && echo "Tests failed" >> "$TRACE_DIR/artifacts/test-output.txt"
+        fi
+    fi
+
+    if ! finalize_trace "$TRACE_ID" "$PROJECT_ROOT" "implementer"; then
+        append_audit "$PROJECT_ROOT" "trace_orphan" "finalize_trace failed for implementer trace $TRACE_ID"
+    fi
+fi
+
+# --- Advisory checks (run after finalize to avoid timeout races) ---
 get_git_state "$PROJECT_ROOT"
 get_plan_status "$PROJECT_ROOT"
 write_statusline_cache "$PROJECT_ROOT"
@@ -81,7 +135,6 @@ if [[ "$MISSING_COUNT" -gt 0 ]]; then
 fi
 
 # Check 3: Approval-loop detection — agent should not end with unanswered question
-RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.response // .result // .output // empty' 2>/dev/null || echo "")
 if [[ -n "$RESPONSE_TEXT" ]]; then
     HAS_APPROVAL_QUESTION=$(echo "$RESPONSE_TEXT" | grep -iE 'do you (approve|confirm|want me to proceed)|shall I (proceed|continue)|ready to (test|review|commit)\?' || echo "")
     HAS_EXECUTION=$(echo "$RESPONSE_TEXT" | grep -iE 'tests pass|implementation complete|done|finished|all tests|ready for review' || echo "")
@@ -101,49 +154,13 @@ else
     ISSUES+=("No test results found — verify tests were run before declaring done")
 fi
 
-# --- Trace protocol: finalize trace ---
-if [[ -n "$TRACE_ID" ]]; then
-    # Fallback: if agent didn't write summary.md, save response excerpt
-    if [[ ! -f "$TRACE_DIR/summary.md" ]]; then
-        echo "$RESPONSE_TEXT" | head -c 4000 > "$TRACE_DIR/summary.md" 2>/dev/null || true
-    fi
-
-    # Auto-capture files-changed.txt if agent didn't write it.
-    # Collects unstaged diffs, staged diffs, and recent commit file names so
-    # finalize_trace() can compute files_changed > 0 even when the agent omitted
-    # the artifact. Uses || true on every git command — hook must not abort on
-    # non-git paths or failed subcommands.
-    if [[ -d "$TRACE_DIR/artifacts" && ! -f "$TRACE_DIR/artifacts/files-changed.txt" ]]; then
-        git -C "$PROJECT_ROOT" diff --name-only 2>/dev/null > "$TRACE_DIR/artifacts/files-changed.txt" || true
-        git -C "$PROJECT_ROOT" diff --cached --name-only 2>/dev/null >> "$TRACE_DIR/artifacts/files-changed.txt" || true
-        git -C "$PROJECT_ROOT" log --name-only --format="" -5 2>/dev/null >> "$TRACE_DIR/artifacts/files-changed.txt" || true
-        sort -u "$TRACE_DIR/artifacts/files-changed.txt" -o "$TRACE_DIR/artifacts/files-changed.txt" 2>/dev/null || true
-    fi
-
-    # Auto-capture test-output.txt from .test-status if agent didn't write it.
-    # .test-status format is "result|fail_count|timestamp". The capture adds a
-    # human-readable prefix so report.sh can display it as evidence text.
-    if [[ -d "$TRACE_DIR/artifacts" && ! -f "$TRACE_DIR/artifacts/test-output.txt" ]]; then
-        TS_FILE=""
-        [[ -f "${CLAUDE_DIR}/.test-status" ]] && TS_FILE="${CLAUDE_DIR}/.test-status"
-        [[ -z "$TS_FILE" && -f "$PROJECT_ROOT/.test-status" ]] && TS_FILE="$PROJECT_ROOT/.test-status"
-        [[ -z "$TS_FILE" && -f "$PROJECT_ROOT/.claude/.test-status" ]] && TS_FILE="$PROJECT_ROOT/.claude/.test-status"
-        if [[ -n "$TS_FILE" ]]; then
-            echo "# Auto-captured from .test-status at $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$TRACE_DIR/artifacts/test-output.txt"
-            cat "$TS_FILE" >> "$TRACE_DIR/artifacts/test-output.txt" 2>/dev/null || true
-            TS_RESULT=$(cut -d'|' -f1 "$TS_FILE" 2>/dev/null || echo "unknown")
-            [[ "$TS_RESULT" == "pass" ]] && echo "Tests passed" >> "$TRACE_DIR/artifacts/test-output.txt"
-            [[ "$TS_RESULT" == "fail" ]] && echo "Tests failed" >> "$TRACE_DIR/artifacts/test-output.txt"
-        fi
-    fi
-
-    # Validate expected artifacts (after auto-capture attempts)
+# Check 5: Validate expected trace artifacts (advisory, not blocking)
+if [[ -n "$TRACE_ID" && -d "$TRACE_DIR" ]]; then
     for artifact in test-output.txt files-changed.txt; do
         if [[ ! -f "$TRACE_DIR/artifacts/$artifact" ]]; then
             ISSUES+=("Trace artifact missing: $artifact (TRACE_DIR=$TRACE_DIR)")
         fi
     done
-    finalize_trace "$TRACE_ID" "$PROJECT_ROOT" "implementer"
 fi
 
 # Response size advisory

@@ -308,6 +308,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "general-purpose",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/check-general-purpose.sh",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PreCompact": [

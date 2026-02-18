@@ -127,10 +127,14 @@ track_subagent_stop "$PROJECT_ROOT" "tester"
 append_session_event "agent_stop" "{\"type\":\"tester\"}" "$PROJECT_ROOT"
 
 # --- Trace protocol: detect and prepare for finalization ---
+# If detect_active_trace returns empty, log to audit — the tester may not have
+# initialized a trace (e.g., quick verifications). This is not a fatal error.
 TRACE_ID=$(detect_active_trace "$PROJECT_ROOT" "tester" 2>/dev/null || echo "")
 TRACE_DIR=""
 if [[ -n "$TRACE_ID" ]]; then
     TRACE_DIR="${TRACE_STORE}/${TRACE_ID}"
+else
+    append_audit "$PROJECT_ROOT" "trace_orphan" "detect_active_trace returned empty for tester — no trace to finalize"
 fi
 
 get_git_state "$PROJECT_ROOT"
@@ -167,7 +171,9 @@ if [[ -n "$TRACE_DIR" && -d "$TRACE_DIR/artifacts" ]]; then
     if [[ ! -f "$TRACE_DIR/summary.md" ]]; then
         echo "$RESPONSE_TEXT" | head -c 4000 > "$TRACE_DIR/summary.md" 2>/dev/null || true
     fi
-    finalize_trace "$TRACE_ID" "$PROJECT_ROOT" "tester"
+    if ! finalize_trace "$TRACE_ID" "$PROJECT_ROOT" "tester"; then
+        append_audit "$PROJECT_ROOT" "trace_orphan" "finalize_trace failed for tester trace $TRACE_ID"
+    fi
 fi
 
 # Response size advisory
