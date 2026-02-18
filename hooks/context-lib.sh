@@ -878,6 +878,248 @@ index_trace() {
     fi
 }
 
+# Re-finalize a single trace whose manifest was sealed before artifacts arrived.
+# Reads artifacts from the trace dir, re-evaluates test_result, files_changed,
+# duration_seconds, and outcome, then updates the manifest only if values changed.
+# Does NOT call index_trace() — caller decides when to rebuild the index.
+# Does NOT check .test-status (project-scoped, may have changed since trace time).
+# Does NOT use git diff fallback for files_changed (worktree may be gone).
+#
+# @decision DEC-REFINALIZE-002
+# @title Re-finalize uses finished_at for duration, not current time
+# @status accepted
+# @rationale finalize_trace() uses now_epoch (current time) for duration because it runs
+#   at SubagentStop time. refinalize_trace() runs retrospectively — possibly days later.
+#   Using current time would inflate duration_seconds to absurd values. Instead, we
+#   parse finished_at from the manifest to get the correct end time. If finished_at is
+#   missing, we skip duration correction (leave as-is) rather than guess.
+#
+# Usage: refinalize_trace "trace_id"
+# Returns: 0 if manifest was updated, 1 if no changes needed
+refinalize_trace() {
+    local trace_id="$1"
+    local trace_dir="${TRACE_STORE}/${trace_id}"
+    local manifest="${trace_dir}/manifest.json"
+
+    [[ ! -f "$manifest" ]] && return 1
+
+    # Read current manifest values
+    local cur_test_result cur_files_changed cur_duration cur_outcome
+    cur_test_result=$(jq -r '.test_result // "unknown"' "$manifest" 2>/dev/null)
+    cur_files_changed=$(jq -r '.files_changed // 0' "$manifest" 2>/dev/null)
+    cur_duration=$(jq -r '.duration_seconds // 0' "$manifest" 2>/dev/null)
+    cur_outcome=$(jq -r '.outcome // "unknown"' "$manifest" 2>/dev/null)
+
+    # --- Re-evaluate test_result from artifacts ---
+    local test_result="unknown"
+
+    if [[ -f "${trace_dir}/artifacts/test-output.txt" ]]; then
+        if grep -qiE 'passed|success|ok' "${trace_dir}/artifacts/test-output.txt" 2>/dev/null; then
+            test_result="pass"
+        elif grep -qiE 'failed|error|failure' "${trace_dir}/artifacts/test-output.txt" 2>/dev/null; then
+            test_result="fail"
+        fi
+    fi
+
+    # Fallback: check verification-output.txt (tester agents write this instead)
+    if [[ "$test_result" == "unknown" && -f "${trace_dir}/artifacts/verification-output.txt" ]]; then
+        if grep -qiE 'passed|success|ok|successful' "${trace_dir}/artifacts/verification-output.txt" 2>/dev/null; then
+            test_result="pass"
+        elif grep -qiE 'failed|error|failure' "${trace_dir}/artifacts/verification-output.txt" 2>/dev/null; then
+            test_result="fail"
+        fi
+    fi
+
+    # --- Re-evaluate files_changed from artifact (no git fallback — worktree may be gone) ---
+    local files_changed=0
+    if [[ -f "${trace_dir}/artifacts/files-changed.txt" ]]; then
+        files_changed=$(wc -l < "${trace_dir}/artifacts/files-changed.txt" | tr -d ' ')
+    fi
+
+    # --- Fix duration_seconds if <= 0 using started_at + finished_at from manifest ---
+    local duration="$cur_duration"
+    if [[ "$cur_duration" -le 0 ]]; then
+        local started_at finished_at
+        started_at=$(jq -r '.started_at // empty' "$manifest" 2>/dev/null)
+        finished_at=$(jq -r '.finished_at // empty' "$manifest" 2>/dev/null)
+        if [[ -n "$started_at" && -n "$finished_at" ]]; then
+            local start_epoch end_epoch
+            start_epoch=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$started_at" +%s 2>/dev/null \
+                || date -u -d "$started_at" +%s 2>/dev/null \
+                || echo "0")
+            end_epoch=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$finished_at" +%s 2>/dev/null \
+                || date -u -d "$finished_at" +%s 2>/dev/null \
+                || echo "0")
+            if [[ "$start_epoch" -gt 0 && "$end_epoch" -gt "$start_epoch" ]]; then
+                duration=$(( end_epoch - start_epoch ))
+            fi
+        fi
+    fi
+
+    # --- Re-evaluate outcome using canonical logic ---
+    local outcome="unknown"
+
+    if [[ "$test_result" == "pass" ]]; then
+        outcome="success"
+    elif [[ "$test_result" == "fail" ]]; then
+        outcome="failure"
+    elif [[ "$duration" -gt 600 && "$test_result" == "unknown" ]]; then
+        outcome="timeout"
+    elif [[ ! -d "${trace_dir}/artifacts" ]]; then
+        outcome="skipped"
+    elif [[ -z "$(ls -A "${trace_dir}/artifacts" 2>/dev/null)" ]]; then
+        outcome="skipped"
+    else
+        outcome="partial"
+    fi
+
+    # Preserve "crashed" outcome if summary.md is missing (don't downgrade to partial)
+    if [[ ! -f "${trace_dir}/summary.md" && "$outcome" != "skipped" ]]; then
+        outcome="crashed"
+    fi
+
+    # --- Check if anything actually changed ---
+    local changed=false
+    [[ "$test_result" != "$cur_test_result" ]] && changed=true
+    [[ "$files_changed" != "$cur_files_changed" ]] && changed=true
+    [[ "$duration" != "$cur_duration" ]] && changed=true
+    [[ "$outcome" != "$cur_outcome" ]] && changed=true
+
+    if ! $changed; then
+        return 1
+    fi
+
+    # --- Atomic manifest update ---
+    local tmp_manifest="${manifest}.tmp"
+    jq --argjson duration "$duration" \
+       --arg test_result "$test_result" \
+       --argjson files_changed "$files_changed" \
+       --arg outcome "$outcome" \
+       '. + {
+         duration_seconds: $duration,
+         test_result: $test_result,
+         files_changed: $files_changed,
+         outcome: $outcome
+       }' "$manifest" > "$tmp_manifest" 2>/dev/null && mv "$tmp_manifest" "$manifest"
+
+    return 0
+}
+
+# Scan all traces and re-finalize those with stale data (test_result=unknown,
+# files_changed=0, or duration_seconds<=0). Optionally limit to traces started
+# within max_age_hours (skip older traces to bound runtime).
+#
+# Usage: refinalize_stale_traces [max_age_hours]
+# Prints: count of traces updated to stdout
+# Returns: 0 always
+refinalize_stale_traces() {
+    local max_age_hours="${1:-}"
+    local updated=0
+    local now_epoch
+    now_epoch=$(date -u +%s)
+
+    for manifest in "${TRACE_STORE}"/*/manifest.json; do
+        [[ ! -f "$manifest" ]] && continue
+
+        # Check staleness criteria
+        local tr fc dur
+        tr=$(jq -r '.test_result // "unknown"' "$manifest" 2>/dev/null)
+        fc=$(jq -r '.files_changed // 0' "$manifest" 2>/dev/null)
+        dur=$(jq -r '.duration_seconds // 0' "$manifest" 2>/dev/null)
+
+        local is_stale=false
+        [[ "$tr" == "unknown" ]] && is_stale=true
+        [[ "$fc" -eq 0 ]] && is_stale=true
+        [[ "$dur" -le 0 ]] && is_stale=true
+
+        if ! $is_stale; then
+            continue
+        fi
+
+        # If max_age_hours provided, skip traces older than the threshold
+        if [[ -n "$max_age_hours" ]]; then
+            local started_at
+            started_at=$(jq -r '.started_at // empty' "$manifest" 2>/dev/null)
+            if [[ -n "$started_at" ]]; then
+                local start_epoch
+                start_epoch=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$started_at" +%s 2>/dev/null \
+                    || date -u -d "$started_at" +%s 2>/dev/null \
+                    || echo "0")
+                if [[ "$start_epoch" -gt 0 ]]; then
+                    local age_hours=$(( (now_epoch - start_epoch) / 3600 ))
+                    if [[ "$age_hours" -gt "$max_age_hours" ]]; then
+                        continue
+                    fi
+                fi
+            fi
+        fi
+
+        local trace_id
+        trace_id=$(jq -r '.trace_id // empty' "$manifest" 2>/dev/null)
+        [[ -z "$trace_id" ]] && continue
+
+        if refinalize_trace "$trace_id"; then
+            updated=$(( updated + 1 ))
+        fi
+    done
+
+    echo "$updated"
+    return 0
+}
+
+# Rebuild the trace index from scratch by reading every manifest.json.
+# Writes a fresh index.jsonl sorted by started_at.
+# Atomically replaces the existing index to avoid partial reads.
+#
+# @decision DEC-REFINALIZE-003
+# @title Atomic tmp-then-mv index rebuild with started_at sort
+# @status accepted
+# @rationale The index may be read by analyze.sh at any moment. A non-atomic
+#   write (truncate then write) would expose a partial file to concurrent readers.
+#   Writing to index.jsonl.tmp then mv-ing is atomic on POSIX filesystems.
+#   Sorting by started_at gives chronological order, matching how index_trace()
+#   appends (oldest traces were appended first). Sorting makes the rebuilt index
+#   match the append-order semantics that suggest.sh and analyze.sh expect.
+#
+# Usage: rebuild_index
+# Returns: 0 always
+rebuild_index() {
+    local tmp_index="${TRACE_STORE}/index.jsonl.tmp"
+    local entries=()
+
+    for manifest in "${TRACE_STORE}"/*/manifest.json; do
+        [[ ! -f "$manifest" ]] && continue
+
+        local entry
+        entry=$(jq -c '{
+          trace_id: (.trace_id // "unknown"),
+          agent_type: (.agent_type // "unknown"),
+          project_name: (.project_name // "unknown"),
+          branch: (.branch // "unknown"),
+          started_at: (.started_at // ""),
+          duration_seconds: (.duration_seconds // 0),
+          outcome: (.outcome // "unknown"),
+          test_result: (.test_result // "unknown"),
+          files_changed: (.files_changed // 0)
+        }' "$manifest" 2>/dev/null)
+
+        [[ -n "$entry" ]] && entries+=("$entry")
+    done
+
+    # Write sorted entries (by started_at) to tmp, then atomic mv
+    if [[ "${#entries[@]}" -gt 0 ]]; then
+        printf '%s\n' "${entries[@]}" \
+            | jq -s 'sort_by(.started_at) | .[]' \
+            | jq -c . \
+            > "$tmp_index" 2>/dev/null
+    else
+        : > "$tmp_index"
+    fi
+
+    mv "$tmp_index" "${TRACE_STORE}/index.jsonl"
+    return 0
+}
+
 # --- Meta-repo detection ---
 # Check if a directory is the ~/.claude meta-infrastructure repo.
 # Uses --git-common-dir so worktrees of ~/.claude are correctly recognized.
@@ -1361,4 +1603,4 @@ build_resume_directive() {
 
 # Export for subshells
 export TRACE_STORE SOURCE_EXTENSIONS DECISION_LINE_THRESHOLD TEST_STALENESS_THRESHOLD SESSION_STALENESS_THRESHOLD
-export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path is_test_file read_test_status validate_state_file atomic_write append_audit write_statusline_cache track_subagent_start track_subagent_stop get_subagent_status safe_cleanup archive_plan init_trace detect_active_trace finalize_trace index_trace is_claude_meta_repo append_session_event get_session_trajectory get_session_summary_context build_resume_directive get_prior_sessions
+export -f get_git_state get_plan_status get_session_changes get_drift_data get_research_status is_source_file is_skippable_path is_test_file read_test_status validate_state_file atomic_write append_audit write_statusline_cache track_subagent_start track_subagent_stop get_subagent_status safe_cleanup archive_plan init_trace detect_active_trace finalize_trace index_trace refinalize_trace refinalize_stale_traces rebuild_index is_claude_meta_repo append_session_event get_session_trajectory get_session_summary_context build_resume_directive get_prior_sessions
