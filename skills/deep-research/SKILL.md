@@ -88,6 +88,27 @@ Use the **Read** tool to read `raw_results.json` from the output directory. The 
     "unreachable": 3,
     "skipped": 0
   },
+  "comparison_matrix": {
+    "providers": ["openai", "perplexity", "gemini"],
+    "topics": [
+      {
+        "name": "company overview",
+        "openai": "detailed",
+        "perplexity": "mentioned",
+        "gemini": "detailed",
+        "agreement": "consensus"
+      }
+    ],
+    "citation_overlap": {
+      "https://example.com/paper": ["openai", "gemini"]
+    },
+    "stats": {
+      "total_topics": 18,
+      "consensus": 5,
+      "majority": 7,
+      "unique": 6
+    }
+  },
   "results": [
     {
       "provider": "openai",
@@ -113,7 +134,7 @@ Use the **Read** tool to read `raw_results.json` from the output directory. The 
 }
 ```
 
-Note: `citation_validation` and `validation` fields within citations are only present if `--validate=1` or higher was used.
+Note: `citation_validation` and `validation` fields within citations are only present if `--validate=1` or higher was used. The `comparison_matrix` key is always present — it is computed deterministically by the script from markdown headings and citation URLs.
 
 **Step 3: Check for provider failures**
 
@@ -235,20 +256,36 @@ Only write provider files for providers that succeeded. The raw individual repor
 
 ### Comparison Matrix
 
-Produce `comparison-matrix.md` — a side-by-side coverage matrix:
+The script produced a `comparison_matrix` object inside `raw_results.json` and a standalone `comparison_matrix.json`. Use this pre-built matrix to write `comparison-matrix.md` — do NOT reconstruct coverage from scratch.
 
-| Topic / Claim | OpenAI | Perplexity | Gemini |
-|--------------|--------|------------|--------|
-| [key topic 1] | Detailed | Mentioned | Absent |
-| [key topic 2] | Mentioned | Detailed | Detailed |
-| [key topic 3] | Absent | Absent | Detailed |
+**How to render the matrix:**
+1. Read `comparison_matrix.topics` from the JSON — each entry has `name`, one key per provider (`"detailed"`, `"mentioned"`, or `"absent"`), and `agreement`.
+2. Render it as a markdown table.
+3. Use `comparison_matrix.citation_overlap` to call out URLs cited by multiple providers (these are the highest-confidence sources).
+4. Use `comparison_matrix.stats` for the summary line (consensus/majority/unique counts).
 
-Coverage levels:
-- **Detailed** — Provider gave substantial analysis (multiple paragraphs, data, sources)
-- **Mentioned** — Provider referenced it briefly
-- **Absent** — Provider did not cover this topic
+Example output format:
+```markdown
+## Topic Coverage Matrix
 
-Include 10-20 key topics/claims from across all providers.
+| Topic | OpenAI | Perplexity | Gemini | Agreement |
+|-------|--------|------------|--------|-----------|
+| company overview | Detailed | Mentioned | Detailed | consensus |
+| apt group connections | Detailed | Detailed | Absent | majority |
+| post-leak developments | Absent | Detailed | Absent | unique-perplexity |
+
+**Stats:** 18 topics — 5 consensus, 7 majority, 6 unique
+
+### Shared Citations (cited by 2+ providers)
+- https://example.com/paper — openai, gemini
+```
+
+**Your job in synthesis:** Read the structured matrix and explain the *interesting patterns* — which consensus findings are most significant, which unique-provider findings deserve follow-up, which majority findings have the strongest evidence. The matrix gives you the structure; you provide the interpretation.
+
+Coverage levels (defined by word count in the section body):
+- **Detailed** — 100+ words (substantial section)
+- **Mentioned** — 1–99 words (brief reference)
+- **Absent** — Topic not found in provider's report
 
 Tell the user where the reports were saved and list the files.
 

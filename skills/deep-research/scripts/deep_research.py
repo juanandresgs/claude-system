@@ -36,6 +36,7 @@ from lib.render import ProviderResult, render_json, render_compact
 from lib import openai_dr, perplexity_dr, gemini_dr
 from lib.errors import ProviderError
 from lib.validate import validate_citations
+from lib.matrix import build_matrix
 
 
 PROVIDER_MODULES = {
@@ -247,14 +248,22 @@ def main():
         sys.stderr.write("Citation validation complete.\n")
         sys.stderr.flush()
 
+    # Build comparison matrix (deterministic, stdlib-only)
+    matrix = build_matrix(results)
+    matrix_dict = matrix.to_dict()
+
     # Output
     if args.output_dir:
         out = Path(args.output_dir)
         out.mkdir(parents=True, exist_ok=True)
 
-        # Write raw_results.json
+        # Write raw_results.json (includes comparison_matrix key)
         with open(out / "raw_results.json", "w") as f:
-            f.write(render_json(results, args.topic))
+            f.write(render_json(results, args.topic, comparison_matrix=matrix_dict))
+
+        # Write comparison_matrix.json as a standalone file
+        with open(out / "comparison_matrix.json", "w") as f:
+            json.dump(matrix_dict, f, indent=2, ensure_ascii=False)
 
         # Write meta.json with session metadata
         completed_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -301,7 +310,7 @@ def main():
                 elapsed = f" after {r.elapsed_seconds}s" if r.elapsed_seconds else ""
                 print(f"  - {r.provider}: {r.error or 'unknown error'}{elapsed}")
     elif args.emit == "json":
-        print(render_json(results, args.topic))
+        print(render_json(results, args.topic, comparison_matrix=matrix_dict))
     else:
         print(render_compact(results, args.topic))
 
