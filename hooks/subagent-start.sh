@@ -153,6 +153,11 @@ case "$AGENT_TYPE" in
         ;;
     guardian)
         CONTEXT_PARTS+=("Role: Guardian — Update MASTER_PLAN.md ONLY at phase boundaries: when a merge completes a phase, update status to completed, populate Decision Log, present diff to user. For non-phase-completing merges, do NOT update the plan — close the relevant GitHub issues instead. Always: verify @decision annotations, check for staged secrets, require explicit approval.")
+        # Save HEAD SHA for commit detection in check-guardian.sh (W3-1: commit event emission)
+        # check-guardian.sh compares current HEAD against this SHA after Guardian runs
+        # to detect whether a commit occurred and emit a `commit` session event.
+        git -C "$PROJECT_ROOT" rev-parse HEAD 2>/dev/null \
+            > "${CLAUDE_DIR}/.guardian-start-sha" 2>/dev/null || true
         # Inject test status
         TEST_STATUS_FILE="${CLAUDE_DIR}/.test-status"
         if [[ -f "$TEST_STATUS_FILE" ]]; then

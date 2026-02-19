@@ -42,6 +42,24 @@ PLAN="$PROJECT_ROOT/MASTER_PLAN.md"
 track_subagent_stop "$PROJECT_ROOT" "guardian"
 append_session_event "agent_stop" "{\"type\":\"guardian\"}" "$PROJECT_ROOT"
 
+# --- W3-1: Emit `commit` event if Guardian advanced HEAD ---
+# subagent-start.sh saves HEAD SHA when Guardian is spawned.
+# We compare here (after Guardian ran) to detect whether a commit occurred.
+# This is more reliable than parsing response text for commit keywords.
+START_SHA_FILE="${CLAUDE_DIR}/.guardian-start-sha"
+if [[ -f "$START_SHA_FILE" ]]; then
+    START_SHA=$(cat "$START_SHA_FILE" 2>/dev/null || echo "")
+    CURRENT_SHA=$(git -C "$PROJECT_ROOT" rev-parse HEAD 2>/dev/null || echo "")
+    if [[ -n "$START_SHA" && -n "$CURRENT_SHA" && "$START_SHA" != "$CURRENT_SHA" ]]; then
+        LAST_MSG=$(git -C "$PROJECT_ROOT" log -1 --format=%s 2>/dev/null || echo "")
+        append_session_event "commit" \
+            "$(jq -cn --arg sha "$CURRENT_SHA" --arg msg "$LAST_MSG" '{sha:$sha,message:$msg}')" \
+            "$PROJECT_ROOT"
+        log_info "CHECK-GUARDIAN" "Emitted commit event: sha=${CURRENT_SHA:0:8} msg=$LAST_MSG"
+    fi
+    rm -f "$START_SHA_FILE"
+fi
+
 # --- Trace protocol: detect and prepare for finalization ---
 TRACE_ID=$(detect_active_trace "$PROJECT_ROOT" "guardian" 2>/dev/null || echo "")
 TRACE_DIR=""
