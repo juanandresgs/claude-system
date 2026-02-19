@@ -54,7 +54,9 @@ if [[ -f "$PROOF_FILE" ]]; then
 fi
 
 # Extract response text early — needed for auto-verify
-RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.response // .result // .output // empty' 2>/dev/null || echo "")
+# Field name confirmed from Claude Code docs: SubagentStop payload uses `last_assistant_message`.
+# `.response` kept as fallback for backward compatibility with any non-standard payloads.
+RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.last_assistant_message // .response // empty' 2>/dev/null || echo "")
 
 # --- Auto-verify: check if tester signals clean verification ---
 # Runs in Phase 1 so it completes well within the 15s timeout.

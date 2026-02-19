@@ -55,7 +55,9 @@ if [[ -n "$TRACE_ID" ]]; then
     TRACE_DIR_PATH="${TRACE_STORE}/${TRACE_ID}"
     # Auto-write summary.md from response text if agent didn't write it or wrote empty file
     # -s checks file exists AND has size > 0 (catches 1-byte empty files)
-    EXPLORE_RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.response // .result // .output // empty' 2>/dev/null || echo "")
+    # Field name confirmed from Claude Code docs: SubagentStop payload uses `last_assistant_message`.
+    # `.response` kept as fallback for backward compatibility with any non-standard payloads.
+    EXPLORE_RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.last_assistant_message // .response // empty' 2>/dev/null || echo "")
     if [[ ! -s "$TRACE_DIR_PATH/summary.md" && -n "$EXPLORE_RESPONSE_TEXT" ]]; then
         echo "$EXPLORE_RESPONSE_TEXT" | head -c 4000 > "$TRACE_DIR_PATH/summary.md" 2>/dev/null || true
     fi
@@ -69,7 +71,9 @@ fi
 ISSUES=()
 
 # Extract response text
-RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.response // .result // .output // empty' 2>/dev/null || echo "")
+# Field name confirmed from Claude Code docs: SubagentStop payload uses `last_assistant_message`.
+# `.response` kept as fallback for backward compatibility with any non-standard payloads.
+RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.last_assistant_message // .response // empty' 2>/dev/null || echo "")
 
 if [[ -n "$RESPONSE_TEXT" ]]; then
     WORD_COUNT=$(echo "$RESPONSE_TEXT" | wc -w | tr -d ' ')

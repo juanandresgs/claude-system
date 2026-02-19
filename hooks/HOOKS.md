@@ -20,7 +20,7 @@ All hooks receive JSON on **stdin** and emit JSON on **stdout**. Stderr is for l
 }
 ```
 
-SubagentStart/SubagentStop hooks receive `{"subagent_type": "planner|implementer|guardian", ...}`. Stop hooks receive `{"response": "..."}`.
+SubagentStart/SubagentStop hooks receive `{"subagent_type": "planner|implementer|guardian", ...}`. SubagentStop hooks additionally receive `{"last_assistant_message": "...", "agent_type": "...", "agent_id": "...", "agent_transcript_path": "...", "stop_hook_active": false}` — use `.last_assistant_message` to read the agent's final response text. Stop hooks (non-subagent) receive `{"stop_hook_active": true/false}`.
 
 ### Stdout Responses (PreToolUse only)
 
@@ -82,7 +82,7 @@ Stop hooks have a **different schema** from PreToolUse/PostToolUse. They do NOT 
 }
 ```
 
-Stop hooks receive `{"stop_hook_active": true/false, "response": "..."}` on stdin. Check `stop_hook_active` to prevent re-firing loops (if a Stop hook's `systemMessage` triggers another model response, the next Stop invocation will have `stop_hook_active: true`).
+Stop hooks receive `{"stop_hook_active": true/false}` on stdin. Check `stop_hook_active` to prevent re-firing loops (if a Stop hook's `systemMessage` triggers another model response, the next Stop invocation will have `stop_hook_active: true`). Note: SubagentStop hooks use `last_assistant_message` for the agent response text — see the Stdin Format note above.
 
 ### Rewrite Pattern
 
