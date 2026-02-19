@@ -43,7 +43,9 @@ track_subagent_stop "$PROJECT_ROOT" "planner"
 append_session_event "agent_stop" "{\"type\":\"planner\"}" "$PROJECT_ROOT"
 
 # Extract response text early — needed for both finalization and checks
-RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.response // .result // .output // empty' 2>/dev/null || echo "")
+# Field name confirmed from Claude Code docs: SubagentStop payload uses `last_assistant_message`.
+# `.response` kept as fallback for backward compatibility with any non-standard payloads.
+RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.last_assistant_message // .response // empty' 2>/dev/null || echo "")
 
 # --- Trace protocol: finalize trace (RUNS FIRST to beat timeout) ---
 TRACE_ID=$(detect_active_trace "$PROJECT_ROOT" "planner" 2>/dev/null || echo "")

@@ -56,7 +56,9 @@ write_statusline_cache "$PROJECT_ROOT"
 ISSUES=()
 
 # Extract agent's response text first (needed for phase-boundary detection)
-RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.response // .result // .output // empty' 2>/dev/null || echo "")
+# Field name confirmed from Claude Code docs: SubagentStop payload uses `last_assistant_message`.
+# `.response` kept as fallback for backward compatibility with any non-standard payloads.
+RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.last_assistant_message // .response // empty' 2>/dev/null || echo "")
 
 # Detect plan completion state from actual plan content (not fragile response text matching)
 get_plan_status "$PROJECT_ROOT"
