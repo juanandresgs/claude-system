@@ -8,6 +8,9 @@
 #   1. detect_approach_pivots() in context-lib.sh
 #   2. Trajectory-aware test-gate.sh guidance on strike 2+
 #   3. Enhanced session-summary.sh with trajectory narrative
+#   W5-2 adds a scale test: 50+ mixed events with an embedded edit-fail-edit-fail
+#   pattern on a specific file. Verifies test-gate.sh names the pivoting file and
+#   assertion in its deny reason even when the signal is buried in noise.
 #   Uses temp directories and mock event files for isolation.
 
 set -euo pipefail
@@ -460,6 +463,137 @@ test_detect_pivots_function_exported() {
 }
 
 # ============================================================================
+# Test (W5-2): Scale test — 50+ events, pivot file named in deny reason
+# ============================================================================
+#
+# Strategy: 44 "noise" events (writes to 10 different background files) surround
+# a clear edit-fail-edit-fail sequence on "src/pivot-target.py". With 2 gate
+# strikes and failing tests, test-gate.sh must pick out the pivot file and
+# the failing assertion from the noise and include them in the deny reason.
+
+test_gate_scale_50_events_pivot_identified() {
+    local proj
+    proj=$(make_temp_project)
+    trap "rm -rf '$proj'" RETURN
+
+    local pivot_file="$proj/src/pivot-target.py"
+    local pivot_assertion="test_pivot_target_contract"
+
+    # --- Generate 50+ mixed events ---
+    # Key design constraint: noise files must each be written ONLY BEFORE
+    # the first test_fail. This ensures they have write_count >= 1 but
+    # post_fail_writes == 0, so detect_approach_pivots does NOT flag them.
+    # Only pivot-target.py gets written both before AND after the test_fail,
+    # satisfying the pivot pattern (write -> fail -> write).
+    #
+    # Structure:
+    #   Phase A (pre-fail noise): 20 unique noise file writes + 3 infra events
+    #   Phase B (pivot): write pivot-target.py, test FAIL
+    #   Phase C (more noise — each noise file written again, but for pivot
+    #             detection they now count as post_fail_writes; however we
+    #             want the pivot file to be clearly the one with the assertion)
+    #   Phase D (pivot second write + second FAIL): confirms the loop
+    #   Phase E (tail noise): more events to pad to 50+
+    #
+    # Because each noise file appears only once before the first FAIL and
+    # once after (making write_count=2, post_fail_writes=1 for each noise
+    # file too), we need to give pivot-target.py more writes. We write it
+    # 3 times before the fail too, so its total write count exceeds any
+    # noise file that only gets 2 writes total.
+
+    local event_file="$proj/.claude/.session-events.jsonl"
+
+    {
+        # Phase A (pre-fail): 20 UNIQUE noise file writes, each written exactly once,
+        # plus infra events. No noise file is ever written again after this phase.
+        # This ensures noise files satisfy write_count=1 < 2, so they cannot match
+        # detect_approach_pivots criteria (requires write_count >= 2).
+        echo "{\"ts\":\"$(ts_ago 900)\",\"event\":\"agent_start\",\"type\":\"implementer\"}"
+        for i in $(seq 1 20); do
+            echo "{\"ts\":\"$(ts_ago $((880 - i * 3)))\",\"event\":\"write\",\"file\":\"$proj/src/noise-${i}.py\",\"lines_changed\":5}"
+        done
+
+        # Phase B: first write to pivot-target.py, then FAIL
+        echo "{\"ts\":\"$(ts_ago 810)\",\"event\":\"write\",\"file\":\"$pivot_file\",\"lines_changed\":30}"
+        echo "{\"ts\":\"$(ts_ago 780)\",\"event\":\"test_run\",\"result\":\"fail\",\"failures\":2,\"assertion\":\"$pivot_assertion\"}"
+
+        # Phase C (post-fail, between pivots): NEW unique noise files (21-30),
+        # each written exactly once after the fail. These have write_count=1,
+        # still below the >= 2 pivot threshold.
+        echo "{\"ts\":\"$(ts_ago 770)\",\"event\":\"gate_eval\",\"hook\":\"guard\",\"result\":\"block\",\"reason\":\"tests failing\"}"
+        echo "{\"ts\":\"$(ts_ago 760)\",\"event\":\"checkpoint\"}"
+        echo "{\"ts\":\"$(ts_ago 750)\",\"event\":\"agent_start\",\"type\":\"tester\"}"
+        for i in $(seq 21 30); do
+            echo "{\"ts\":\"$(ts_ago $((740 - (i - 20) * 2)))\",\"event\":\"write\",\"file\":\"$proj/src/noise-${i}.py\",\"lines_changed\":1}"
+        done
+        echo "{\"ts\":\"$(ts_ago 715)\",\"event\":\"test_run\",\"result\":\"pass\",\"failures\":0,\"assertion\":\"test_noise_batch\"}"
+
+        # Phase D: second write to pivot-target.py then FAIL (cements pivot loop)
+        # pivot-target.py now: write_count=2, post_fail_writes=1 — satisfies pivot
+        echo "{\"ts\":\"$(ts_ago 710)\",\"event\":\"write\",\"file\":\"$pivot_file\",\"lines_changed\":8}"
+        echo "{\"ts\":\"$(ts_ago 700)\",\"event\":\"test_run\",\"result\":\"fail\",\"failures\":2,\"assertion\":\"$pivot_assertion\"}"
+
+        # Phase E (tail): more unique noise files (31-40) + infra events to pad to 50+
+        echo "{\"ts\":\"$(ts_ago 690)\",\"event\":\"agent_start\",\"type\":\"guardian\"}"
+        for i in $(seq 31 40); do
+            echo "{\"ts\":\"$(ts_ago $((680 - (i - 30) * 2)))\",\"event\":\"write\",\"file\":\"$proj/src/noise-${i}.py\",\"lines_changed\":1}"
+        done
+        echo "{\"ts\":\"$(ts_ago 655)\",\"event\":\"gate_eval\",\"hook\":\"guard\",\"result\":\"allow\",\"reason\":\"\"}"
+        echo "{\"ts\":\"$(ts_ago 645)\",\"event\":\"checkpoint\"}"
+    } > "$event_file"
+
+    local total_events
+    total_events=$(wc -l < "$event_file" | tr -d ' ')
+
+    # Set up failing test status and 1 existing strike (so next write = strike 2 = deny)
+    local now
+    now=$(date +%s)
+    echo "fail|2|$now" > "$proj/.claude/.test-status"
+    echo "1|$now" > "$proj/.claude/.test-gate-strikes"
+
+    # Mock a Write tool call targeting pivot-target.py (the looping file)
+    local hook_input
+    hook_input=$(jq -n \
+        --arg file "$pivot_file" \
+        '{tool_name: "Write", tool_input: {file_path: $file, content: "# attempt N"}}')
+
+    local output
+    output=$(
+        export CLAUDE_PROJECT_DIR="$proj"
+        echo "$hook_input" | bash "${HOOKS_DIR}/test-gate.sh" 2>/dev/null
+    )
+
+    # Assert 1: denied
+    run_test
+    if echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' > /dev/null 2>&1; then
+        pass "Scale test ($total_events events): test-gate denies on strike 2"
+    else
+        fail "Scale test: test-gate did not deny" "Output: $output"
+        return
+    fi
+
+    # Assert 2: deny reason mentions the pivot file (by basename)
+    run_test
+    local reason
+    reason=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecisionReason // ""' 2>/dev/null)
+    if echo "$reason" | grep -q "pivot-target"; then
+        pass "Scale test: deny reason mentions pivot-target.py among $total_events events"
+    else
+        fail "Scale test: deny reason does not mention pivot file" \
+            "Reason: $reason"
+    fi
+
+    # Assert 3: deny reason mentions the failing assertion
+    run_test
+    if echo "$reason" | grep -q "$pivot_assertion"; then
+        pass "Scale test: deny reason mentions assertion '$pivot_assertion'"
+    else
+        fail "Scale test: deny reason missing assertion name" \
+            "Reason: $reason"
+    fi
+}
+
+# ============================================================================
 # Run all tests
 # ============================================================================
 
@@ -483,6 +617,10 @@ echo ""
 echo "--- session-summary.sh trajectory narrative ---"
 test_session_summary_trajectory_narrative
 test_session_summary_no_events_still_works
+
+echo ""
+echo "--- scale test (W5-2) ---"
+test_gate_scale_50_events_pivot_identified
 
 # Summary
 echo ""

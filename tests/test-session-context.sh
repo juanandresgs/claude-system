@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
-# Tests for get_session_summary_context() — structured session context for commits.
+# Tests for get_session_summary_context() and get_session_trajectory()
+# — structured session context for commits and trajectory data accuracy.
 #
 # Validates:
 #   1. Structured text output from a sample .session-events.jsonl
 #   2. Non-trivial session (>5 events) generates meaningful context
 #   3. Trivial session (<3 events) produces empty output
 #   4. Stats line includes correct counts (tool calls, files, checkpoints)
+#   5. Guardian injection path: 10+ events produce non-empty output with header+Stats
+#   6. Stats accuracy: known event counts map to correct TRAJ_* variables
 #
 # @decision DEC-V2-005
 # @title Test suite for session context in commits
 # @status accepted
 # @rationale Tests cover the core contract of get_session_summary_context():
 #   structured output for non-trivial sessions, silence for trivial ones.
+#   W5-1 adds Guardian injection path test (10+ events) and trajectory accuracy
+#   test with known counts to validate TRAJ_* variable correctness.
 #   Uses temp directories with synthetic .session-events.jsonl to avoid
 #   dependency on live session state.
 
@@ -84,6 +89,26 @@ call_summary() {
         # Suppress any git errors from context-lib.sh
         source "$CONTEXT_LIB" 2>/dev/null
         get_session_summary_context "$dir" 2>/dev/null
+    )
+}
+
+# Write a rewind event
+rewind_event() {
+    local dir="$1" ts="${2:-2026-02-17T10:05:00Z}"
+    echo "{\"ts\":\"$ts\",\"event\":\"rewind\"}" >> "$dir/.claude/.session-events.jsonl"
+}
+
+# Call get_session_trajectory in a subshell, echoing the TRAJ_* variables
+call_trajectory() {
+    local dir="$1"
+    (
+        source "$CONTEXT_LIB" 2>/dev/null
+        get_session_trajectory "$dir" 2>/dev/null
+        echo "TRAJ_TOOL_CALLS=${TRAJ_TOOL_CALLS}"
+        echo "TRAJ_FILES_MODIFIED=${TRAJ_FILES_MODIFIED}"
+        echo "TRAJ_TEST_FAILURES=${TRAJ_TEST_FAILURES}"
+        echo "TRAJ_CHECKPOINTS=${TRAJ_CHECKPOINTS}"
+        echo "TRAJ_REWINDS=${TRAJ_REWINDS}"
     )
 }
 
@@ -324,6 +349,125 @@ test_no_friction_on_clean_session() {
 }
 
 # ============================================================================
+# Test 9 (W5-1): Guardian injection path — 10+ events produce full context block
+# ============================================================================
+
+test_guardian_injection_path() {
+    run_test
+    echo -n "Testing Guardian injection path (10+ events has header and Stats)... "
+
+    local dir
+    dir=$(make_project)
+    trap "rm -rf '$dir'" RETURN
+
+    # Build a realistic session: 6 writes to 3 files, 2 test failures,
+    # 1 checkpoint, 1 agent_start, 1 rewind — 11 events total
+    write_event "$dir" "hooks/guard.sh"         "2026-02-19T08:00:00Z"
+    write_event "$dir" "hooks/context-lib.sh"   "2026-02-19T08:01:00Z"
+    test_fail_event "$dir" "test_guard_branch"  "2026-02-19T08:02:00Z"
+    write_event "$dir" "hooks/guard.sh"         "2026-02-19T08:03:00Z"
+    test_fail_event "$dir" "test_guard_branch"  "2026-02-19T08:04:00Z"
+    write_event "$dir" "hooks/test-gate.sh"     "2026-02-19T08:05:00Z"
+    checkpoint_event "$dir"                     "2026-02-19T08:06:00Z"
+    write_event "$dir" "hooks/guard.sh"         "2026-02-19T08:07:00Z"
+    agent_start_event "$dir" "implementer"      "2026-02-19T08:08:00Z"
+    write_event "$dir" "hooks/context-lib.sh"   "2026-02-19T08:09:00Z"
+    rewind_event "$dir"                         "2026-02-19T08:10:00Z"
+
+    local result
+    result=$(call_summary "$dir")
+
+    # Assert 1: non-empty
+    if [[ -z "$result" ]]; then
+        fail_test "Guardian injection path: got empty output for 11-event session" "result was empty"
+        return
+    fi
+
+    # Assert 2: has --- Session Context --- header
+    if ! echo "$result" | grep -q '^--- Session Context ---'; then
+        fail_test "Guardian injection path: missing --- Session Context --- header" "Got: $result"
+        return
+    fi
+
+    # Assert 3: has Stats: line
+    if ! echo "$result" | grep -q '^Stats:'; then
+        fail_test "Guardian injection path: missing Stats: line" "Got: $result"
+        return
+    fi
+
+    pass_test "Guardian injection path: 11-event session has header and Stats line"
+}
+
+# ============================================================================
+# Test 10 (W5-1): Stats accuracy for non-trivial session with known counts
+# ============================================================================
+
+test_stats_accuracy_known_counts() {
+    run_test
+    echo -n "Testing get_session_trajectory() accuracy with known event counts... "
+
+    local dir
+    dir=$(make_project)
+    trap "rm -rf '$dir'" RETURN
+
+    # Synthetic session with precisely known counts:
+    #   - 5 writes to 3 unique files (file-a.py x3, file-b.py x1, file-c.py x1)
+    #   - 2 test_run fail events
+    #   - 1 checkpoint event
+    #   - 1 rewind event
+    local file_a="src/file-a.py"
+    local file_b="src/file-b.py"
+    local file_c="src/file-c.py"
+
+    write_event "$dir" "$file_a" "2026-02-19T09:00:00Z"
+    test_fail_event "$dir" "test_file_a_parse" "2026-02-19T09:01:00Z"
+    write_event "$dir" "$file_a" "2026-02-19T09:02:00Z"
+    test_fail_event "$dir" "test_file_a_parse" "2026-02-19T09:03:00Z"
+    write_event "$dir" "$file_b" "2026-02-19T09:04:00Z"
+    checkpoint_event "$dir"     "2026-02-19T09:05:00Z"
+    write_event "$dir" "$file_c" "2026-02-19T09:06:00Z"
+    rewind_event "$dir"          "2026-02-19T09:07:00Z"
+    write_event "$dir" "$file_a" "2026-02-19T09:08:00Z"
+
+    local traj
+    traj=$(call_trajectory "$dir")
+
+    local tool_calls files_modified test_failures checkpoints rewinds
+    tool_calls=$(echo "$traj"   | grep "^TRAJ_TOOL_CALLS="    | cut -d= -f2)
+    files_modified=$(echo "$traj" | grep "^TRAJ_FILES_MODIFIED=" | cut -d= -f2)
+    test_failures=$(echo "$traj"  | grep "^TRAJ_TEST_FAILURES="  | cut -d= -f2)
+    checkpoints=$(echo "$traj"    | grep "^TRAJ_CHECKPOINTS="    | cut -d= -f2)
+    rewinds=$(echo "$traj"        | grep "^TRAJ_REWINDS="         | cut -d= -f2)
+
+    local all_ok=true
+
+    if [[ "$tool_calls" -ne 5 ]]; then
+        fail_test "TRAJ_TOOL_CALLS: expected 5, got '$tool_calls'" "$traj"
+        all_ok=false
+    fi
+    if [[ "$files_modified" -ne 3 ]]; then
+        fail_test "TRAJ_FILES_MODIFIED: expected 3 unique files, got '$files_modified'" "$traj"
+        all_ok=false
+    fi
+    if [[ "$test_failures" -ne 2 ]]; then
+        fail_test "TRAJ_TEST_FAILURES: expected 2, got '$test_failures'" "$traj"
+        all_ok=false
+    fi
+    if [[ "$checkpoints" -ne 1 ]]; then
+        fail_test "TRAJ_CHECKPOINTS: expected 1, got '$checkpoints'" "$traj"
+        all_ok=false
+    fi
+    if [[ "$rewinds" -ne 1 ]]; then
+        fail_test "TRAJ_REWINDS: expected 1, got '$rewinds'" "$traj"
+        all_ok=false
+    fi
+
+    if [[ "$all_ok" == "true" ]]; then
+        pass_test "get_session_trajectory() reports correct counts: 5 writes, 3 files, 2 failures, 1 checkpoint, 1 rewind"
+    fi
+}
+
+# ============================================================================
 # Run all tests
 # ============================================================================
 
@@ -338,6 +482,8 @@ test_stats_line_file_count
 test_stats_line_checkpoints
 test_friction_line_on_failures
 test_no_friction_on_clean_session
+test_guardian_injection_path
+test_stats_accuracy_known_counts
 
 echo ""
 echo "========================================="
