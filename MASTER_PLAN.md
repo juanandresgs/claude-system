@@ -1,4 +1,4 @@
-# MASTER_PLAN: Claude System v2 — Governance + Observability
+# MASTER_PLAN: Claude System v3 — Hardening and Reliability
 
 ## Project Overview
 **Type:** meta-infrastructure (hooks, agents, skills, commands)
@@ -12,485 +12,442 @@
   commands/  — 6 slash commands (backlog, compact, ...)
   scripts/   — Utility scripts (todo, update-check, batch-fetch)
   traces/    — Agent trace protocol (43 manifests, 39 indexed, 489 in oldTraces/)
-  tests/     — Hook validation suite (121 tests)
+  tests/     — Hook validation suite (141 tests)
   observatory/ — Self-improvement flywheel (analyze, suggest, report)
 
 ### Active Work
-  Observability Platform Overhaul — fix degraded trace lifecycle, observatory pipeline, test coverage
-  v2 Session Observability — fuse observability into governance layer (partially implemented, deferred)
+  v3 Hardening — auto-verify pipeline repair, proof-of-work chain completion, shared library consolidation
+  2 stale worktrees to clean: feature/guard-fix, feature/v2-session-hooks (both merged, clean)
 
 ---
 
 ## Original Intent
 
-> v1 is a governance layer: hooks enforce Sacred Practices, prevent bad states, gate
-> commits on evidence. Strong at enforcement. Weak at memory. v2 fuses observability
-> into that same layer. Hooks shift from gatekeeper to advisor. Agents share a session
-> narrative. Commits tell stories. The system remembers friction and avoids repeating it.
+> v2 built the governance + observability infrastructure. It works — 140/141 tests pass,
+> all 6 phases completed. But production reveals reliability gaps: auto-verify never fires
+> (dead fast path), the proof-of-work chain has untested links, guard.sh carries dead
+> rewrite() code, and the shared library has accumulated duplication across 14 hooks.
+> v3 hardens the existing system. No new features — just making what exists bulletproof.
 
 ## Problem Statement
 
-A comprehensive audit (2026-02-18) revealed 14 significant issues across the trace
-lifecycle, observatory pipeline, and test coverage. The system is functionally degraded:
-- Observatory suggestion pipeline only produces output for cohort regressions (2/8 signals
-  are in regression; the other 6 are marked implemented but some fixes were incomplete)
-- 74% of traces (14/19 in post-refinalize index) have test_result="unknown"
-- Index out of sync: 39 entries vs 43 manifests (4 traces missing from index)
-- 489 traces in oldTraces/ invisible to observatory analysis
-- 4 orphaned active trace markers from crashed agents
-- Silent jq failures in finalize/refinalize mask manifest update errors
-- detect_active_trace() glob expansion race with concurrent same-type agents
+The system's enforcement layer is functionally complete but has reliability blind spots
+discovered through production use (2026-02-18 through 2026-02-19):
 
-The v2 session observability features (session events, checkpoints, cross-session learning)
-were partially implemented during organic development but were never formally validated
-against their original requirements. The existing plan (Phases 0-4) is stale — 75% source
-file churn since last update, and several planned features already exist in code.
+1. **Auto-verify is dead.** The fast path that skips manual user approval when tester
+   confidence is High has never fired in production. `check-tester.sh` cannot find
+   the `AUTOVERIFY: CLEAN` signal in the SubagentStop payload (#129). Every tester run
+   falls back to manual approval, adding unnecessary friction to every merge cycle.
 
-**Dominant Constraint:** data quality (observatory insights are only as good as the trace data)
+2. **Proof-of-work chain is partially untested.** Issues #41-44 (v1 proof chain hardening)
+   are open. Codebase audit shows: guard.sh Check 8, track.sh invalidation, and
+   session-init.sh proof clearing all work correctly. But: session-summary.sh lacks proof
+   status reporting, subagent-start.sh lacks proof status injection for implementer,
+   no contract tests exist (test-proof-chain.sh), and HOOKS.md is missing proof clearing
+   documentation for session-init.sh.
+
+3. **Guard.sh dead code.** #92 identified all rewrite() calls as silently broken (updatedInput
+   not supported in PreToolUse hooks). #98 converted most to deny(). Final sweep needed
+   to confirm all rewrites are converted and close the issue.
+
+4. **Shared library duplication.** 4 implementations of session file lookup logic across
+   hooks (#7). compact-preserve.sh reimplements context-lib.sh functions. 9/16 hooks
+   use raw jq instead of get_field(). One failing test (crash detection) caused by
+   missing source-lib.sh in test subshell.
+
+**Dominant Constraint:** reliability (every enforcement gap is a bypass risk)
 
 ## Goals & Non-Goals
 
 ### Goals
-- REQ-GOAL-001: Observatory flywheel produces actionable suggestions from trace data
-- REQ-GOAL-002: Trace manifests accurately reflect agent outcomes (test results, files changed, duration)
-- REQ-GOAL-003: Every session leaves a persistent trace (event log + summary)
-- REQ-GOAL-004: Mid-session recovery in seconds via named checkpoints
-- REQ-GOAL-005: System learns across sessions (friction patterns surfaced proactively)
+- REQ-GOAL-001: Auto-verify fast path fires in production when tester signals High confidence
+- REQ-GOAL-002: Proof-of-work chain is fully tested with contract tests covering all enforcement points
+- REQ-GOAL-003: All hook shared code flows through context-lib.sh (single source of truth)
+- REQ-GOAL-004: Test suite reaches 0 failures on main (currently 1 failure)
 
 ### Non-Goals
-- REQ-NOGO-001: External logging service integration — local files only
-- REQ-NOGO-002: Real-time dashboard — event log is for post-hoc analysis and agent use
-- REQ-NOGO-003: Modifying the trace protocol — session events complement traces, not replace
-- REQ-NOGO-004: Reprocessing oldTraces/ data into the main index — archive is read-only reference
-- REQ-NOGO-005: Rewriting observatory from scratch — targeted fixes to existing pipeline
+- REQ-NOGO-001: Multi-instance plan file scoping (#115) — deferred to separate plan, touches 14+ hooks
+- REQ-NOGO-002: Hook status visualization (#94) — enhancement, not hardening
+- REQ-NOGO-003: New features or capabilities — this plan fixes what exists
+- REQ-NOGO-004: todo.sh refactoring (#57/#58/#69) — separate initiative
+- REQ-NOGO-005: Release process or branch protection (#67/#61) — separate initiative
 
 ## Requirements
 
-### Must-Have (P0) — Observability Overhaul
+### Must-Have (P0)
 
-- REQ-P0-OBS-001: Observatory suggest.sh produces suggestions for all active signals, including regression re-proposals.
-  Acceptance: Given 2+ cohort regressions in analysis-cache.json, When suggest.sh runs, Then SUG-NNN.json files are created for each regression.
+- REQ-P0-001: Auto-verify signal extraction works in check-tester.sh.
+  Acceptance: Given tester response contains "AUTOVERIFY: CLEAN", When check-tester.sh
+  runs, Then .proof-status is set to "verified" and AUTO-VERIFIED is emitted.
 
-- REQ-P0-OBS-002: jq failures in finalize_trace and refinalize_trace are logged, not silently swallowed.
-  Acceptance: Given a malformed manifest.json, When finalize_trace runs, Then an error is logged to stderr and the function returns non-zero.
+- REQ-P0-002: Diagnostic logging in check-tester.sh reveals payload structure.
+  Acceptance: check-tester.sh logs RESPONSE_TEXT length and AUTOVERIFY grep result to stderr.
 
-- REQ-P0-OBS-003: detect_active_trace() returns the correct trace for the current session without glob race.
-  Acceptance: Given two concurrent planner agents, When detect_active_trace is called, Then each gets its own trace_id (not the other's).
+- REQ-P0-003: Guardian session context data flow validated end-to-end (#121).
+  Acceptance: Test proves event log -> get_session_summary_context() -> subagent-start.sh
+  injection -> Guardian startup context with correct trajectory stats.
 
-- REQ-P0-OBS-004: Trace index stays in sync with manifests — rebuild_index covers all trace directories.
-  Acceptance: Given 43 manifest files exist, When rebuild_index runs, Then index.jsonl has 43 entries.
+- REQ-P0-004: v2 lifecycle integration test covers full 10-stage arc (#122).
+  Acceptance: INTENT-06 in test-v2-e2e.sh exercises session_start through cross-session
+  context with 10 sequential assertions completing in under 10 seconds.
 
-- REQ-P0-OBS-005: refinalize_stale_traces runs successfully and heals orphaned/stale traces.
-  Acceptance: Given 4 orphaned active markers, When refinalize_stale_traces runs, Then markers are cleaned and stale manifests are updated.
+- REQ-P0-005: session-summary.sh includes proof status in stop output (#42 residual).
+  Acceptance: When .proof-status exists, session summary GIT_LINE includes "Proof: verified."
+  or "Proof: PENDING." or "Proof: not started."
 
-- REQ-P0-OBS-006: Observatory tests pass on main branch without worktree dependencies.
-  Acceptance: Given a fresh clone on main, When tests/test-observatory-*.sh run, Then all tests pass.
+- REQ-P0-006: subagent-start.sh injects current proof status for implementer (#42 residual).
+  Acceptance: When implementer spawns, context includes proof status (verified/pending/missing)
+  with appropriate guidance text.
 
-- REQ-P0-OBS-007: test_result detection covers .test-status fallback in both finalize and refinalize paths.
-  Acceptance: Given a trace with .test-status=pass but no test-output.txt, When finalize_trace runs, Then test_result=pass in manifest.
+- REQ-P0-007: Contract test script test-proof-chain.sh covers full enforcement chain (#43).
+  Acceptance: 18 test cases covering guard.sh Check 8, track.sh invalidation,
+  session-init.sh clearing, and meta-repo exemptions. All tests pass in isolated temp dir.
 
-### Must-Have (P0) — v2 Session Observability (already partially implemented)
+- REQ-P0-008: HOOKS.md session-init.sh description mentions proof clearing (#44 residual).
+  Acceptance: HOOKS.md line for session-init.sh includes "Clears stale .proof-status" language.
 
-- REQ-P0-001: `.session-events.jsonl` written atomically during sessions with structured events.
-  Acceptance: After any session with tool calls, `.session-events.jsonl` exists with valid JSONL.
+- REQ-P0-009: Test suite has 0 failures on main.
+  Acceptance: tests/run-hooks.sh reports 0 failed. Crash detection test sources source-lib.sh.
 
-- REQ-P0-002: `get_session_trajectory()` returns accurate session aggregates.
-  Acceptance: Returns correct TRAJ_TOOL_CALLS, TRAJ_FILES_MODIFIED, TRAJ_GATE_BLOCKS counts.
-
-- REQ-P0-003: Session events archived to `~/.claude/sessions/<project>/` on session end.
-  Acceptance: After session ends, archived JSONL exists in sessions directory.
-
-- REQ-P0-004: `refs/checkpoints/<branch>/N` created via git plumbing on Write/Edit.
-  Acceptance: Checkpoint refs exist after implementer session with 5+ tool calls.
-
-- REQ-P0-005: `/rewind` skill restores to a named checkpoint.
-  Acceptance: After rewind, working tree matches checkpoint state.
-
-- REQ-P0-006: Guardian includes `--- Session Context ---` block in non-trivial commits.
-  Acceptance: Commits with >5 tool calls include the session context block.
-
-- REQ-P0-007: test-gate provides trajectory-based guidance on strike 2+.
-  Acceptance: When same assertion fails 3x, guidance mentions the specific assertion and files.
-
-- REQ-P0-008: Prior session friction injected at session start.
-  Acceptance: After 3+ sessions, session-init mentions recurring friction patterns.
+- REQ-P0-010: guard.sh has no remaining dead rewrite() calls (#92 final sweep).
+  Acceptance: grep -c 'rewrite ' hooks/guard.sh returns 0. All converted to deny().
 
 ### Nice-to-Have (P1)
 
-- REQ-P1-001: Session retrospective written as human-readable summary.
-- REQ-P1-002: Checkpoint frequency auto-tuned (more frequent near test failures).
-- REQ-P1-003: Cross-session friction pattern detection (same assertion failing across sessions).
-- REQ-P1-004: analyze.sh counts oldTraces/ in its dataset when computing historical baselines.
-- REQ-P1-005: Assessment report auto-regenerates when analysis-cache is newer than report.
+- REQ-P1-001: Shared library consolidation — session lookup unified in context-lib.sh (#7).
+- REQ-P1-002: compact-preserve.sh sources context-lib.sh instead of reimplementing (#7).
+- REQ-P1-003: Raw jq calls converted to get_field() across 9 hooks (#7).
+- REQ-P1-004: Self-audit harness consistency checks (#35) — evaluate /uplevel extension.
+- REQ-P1-005: Markdown link verification in agent-written files (#93).
 
 ### Future Consideration (P2)
 
-- REQ-P2-001: Structured development log digest in session-init (not just prior session summaries).
-- REQ-P2-002: Historical baseline detection uses multi-day windows instead of single-day threshold.
+- REQ-P2-001: Multi-instance plan file scoping (#115) — project-scoped get_plan_file().
+- REQ-P2-002: Hook status visualization with statusline (#94).
+- REQ-P2-003: Checkpoint frequency auto-tuning (REQ-P1-002 from v2 plan).
+- REQ-P2-004: Cross-session friction pattern detection (REQ-P1-003 from v2 plan).
 
 ## Definition of Done
 
-All P0 requirements satisfied. All existing hook tests continue to pass. Observatory
-flywheel produces actionable suggestions. Each phase independently valuable and mergeable.
+All P0 requirements satisfied. Test suite at 0 failures. Auto-verify fires in production
+on next clean tester run. Proof chain fully tested. Issues #41-44 closeable based on
+evidence. Each phase independently valuable and mergeable.
 
 ## Architectural Decisions
 
-- DEC-V2-001: Session events as JSONL append-only log.
-  Addresses: REQ-P0-001.
+- DEC-V3-001: Diagnostic-first approach for auto-verify repair.
+  Addresses: REQ-P0-001, REQ-P0-002.
+  Rationale: Auto-verify has never fired in production despite correct tester output.
+  The root cause is unknown — could be payload truncation, wrong field name, or empty
+  response text. Add diagnostic logging first to capture the actual payload structure,
+  then fix based on evidence. Avoids speculative rewrites.
 
-- DEC-V2-002: Git ref-based checkpoints via plumbing commands.
-  Addresses: REQ-P0-004, REQ-P0-005.
+- DEC-V3-002: Convert remaining guard.sh rewrite() to deny() with suggested command.
+  Addresses: REQ-P0-010.
+  Rationale: updatedInput is not supported in PreToolUse hooks (upstream claude-code#26506).
+  All rewrite() calls silently fail. The deny() approach forces the model to resubmit
+  with the corrected command. UX cost is acceptable since upstream fix timeline is unknown.
 
-- DEC-V2-003: Session archive indexed by project hash.
-  Addresses: REQ-P0-003, REQ-P0-008.
+- DEC-V3-003: Proof chain architecture has evolved — adapt #41-44 to current design.
+  Addresses: REQ-P0-005, REQ-P0-006, REQ-P0-007, REQ-P0-008.
+  Rationale: The original #41-44 plan assumed check-implementer.sh owned proof verification
+  (Check 5). This was replaced by DEC-IMPL-STOP-001 which moved proof to the tester agent.
+  The contract tests (#43) must be rewritten to reflect the current architecture: guard.sh
+  Check 8 + Check 9 + Check 10, track.sh invalidation, task-track.sh Gate C, session-init.sh
+  clearing. check-implementer.sh proof tests are no longer applicable.
 
-- DEC-V2-004: Trajectory data as shell variables, not JSON.
-  Addresses: REQ-P0-002.
-
-- DEC-V2-005: Session context in commits as structured text block, not metadata.
-  Addresses: REQ-P0-006.
-
-- DEC-OBS-OVERHAUL-001: Fix forward, not rewrite — targeted patches to existing pipeline.
-  Addresses: REQ-P0-OBS-001 through REQ-P0-OBS-007.
-  Rationale: The observatory pipeline (analyze.sh, suggest.sh, report.sh) is architecturally
-  sound. The issues are specific bugs (jq error handling, glob races, missing fallbacks),
-  not design flaws. Rewriting would lose the extensive @decision documentation and tested
-  signal metadata. Fix the bugs, heal the data, add missing tests.
-
-- DEC-OBS-OVERHAUL-002: Session-specific marker lookup before glob fallback in detect_active_trace.
-  Addresses: REQ-P0-OBS-003.
-  Rationale: The glob fallback (`ls -t .active-TYPE-*`) races when concurrent agents of
-  the same type exist. The session-specific marker (`CLAUDE_SESSION_ID`) is already checked
-  first but falls through to the racy glob when the session ID is missing. Fix: make the
-  glob fallback validate the marker's trace_id against the manifest's session_id.
-
-- DEC-OBS-OVERHAUL-003: jq error propagation via explicit error checking, not /dev/null.
-  Addresses: REQ-P0-OBS-002.
-  Rationale: 151 instances of `2>/dev/null` in context-lib.sh. Not all should be removed —
-  many are legitimate (optional fields, non-git directories). The critical path is the
-  manifest update in finalize_trace (line 844-861) where a jq failure silently drops all
-  field updates. Fix: check jq exit code and log failures for the manifest write path.
+- DEC-V3-004: Fix test crash detection by sourcing source-lib.sh in test subshell.
+  Addresses: REQ-P0-009.
+  Rationale: Test 6 in run-hooks.sh sources context-lib.sh directly but context-lib.sh
+  calls get_claude_dir() which is defined in log.sh. The fix is to source source-lib.sh
+  (which bootstraps log.sh + context-lib.sh) instead of sourcing context-lib.sh alone.
 
 ## Critical Files
-- `hooks/context-lib.sh` — All trace lifecycle functions (init, finalize, refinalize, rebuild_index)
-- `skills/observatory/scripts/suggest.sh` — Suggestion pipeline (signal scoring, batch grouping)
-- `skills/observatory/scripts/analyze.sh` — Analysis pipeline (signal detection, cohort regression)
-- `observatory/state.json` — Implemented/rejected/deferred signal tracking
-- `tests/test-observatory-*.sh` — Observatory test suite (4 test files, worktree-dependent)
+- `hooks/check-tester.sh` — Auto-verify signal extraction (lines 89-159)
+- `hooks/guard.sh` — Proof gate (Check 8), anti-tamper (Check 9-10), rewrite audit
+- `hooks/track.sh` — Proof invalidation on source changes (lines 53-64)
+- `hooks/session-summary.sh` — Missing proof status in stop output
+- `hooks/subagent-start.sh` — Missing proof injection for implementer
+- `hooks/context-lib.sh` — Shared library (2312 lines), session lookup duplication
+- `tests/run-hooks.sh` — Test 6 crash detection failure, new test-proof-chain.sh
 
 ---
 
-## Phase 0: Critical Fixes (Observatory Pipeline Revival)
-**Status:** completed
-**Decision IDs:** DEC-OBS-OVERHAUL-001, DEC-OBS-OVERHAUL-002, DEC-OBS-OVERHAUL-003
-**Requirements:** REQ-P0-OBS-001, REQ-P0-OBS-002, REQ-P0-OBS-003, REQ-P0-OBS-005
-**Issues:** #99, #100, #101, #102
+## Completed Phases (v2 Plan — archived)
+
+Phases 0-5 from the v2 plan are completed and archived at
+`archived-plans/2026-02-19_v2-governance-observability.md`. Summary:
+
+| Phase | Name | Status | Issues |
+|-------|------|--------|--------|
+| 0 | Critical Fixes (Observatory Pipeline Revival) | completed | #99-#102 |
+| 1 | Data Quality (Trace Accuracy) | completed | #103-#106 |
+| 2 | Pipeline Completion (Observatory Enhancement) | completed | #107-#110 |
+| 3 | v2 Session Event Log (Foundation) | completed | #81, #116, #117 |
+| 4 | v2 Checkpoints & Rewind | completed | #82, #118-#120 |
+| 5 | v2 Session-Aware Hooks + Commit Context | completed | #83, #84, #121, #122 |
+
+---
+
+## Phase 6: Auto-Verify Pipeline Repair
+**Status:** planned
+**Decision IDs:** DEC-V3-001, DEC-V3-004
+**Requirements:** REQ-P0-001, REQ-P0-002, REQ-P0-003, REQ-P0-004, REQ-P0-009
+**Issues:** #129, #121, #122, #125, #130, #131, #132, #133
 **Definition of Done:**
-- REQ-P0-OBS-001 satisfied: suggest.sh produces SUG files for regression signals AND any new unimplemented signals
-- REQ-P0-OBS-002 satisfied: finalize_trace manifest write failures are logged and detectable
-- REQ-P0-OBS-003 satisfied: detect_active_trace returns correct trace_id with concurrent agents
-- REQ-P0-OBS-005 satisfied: refinalize_stale_traces heals orphaned markers and stale manifests
+- REQ-P0-001 satisfied: Auto-verify fires when tester signals AUTOVERIFY: CLEAN
+- REQ-P0-002 satisfied: check-tester.sh diagnostic logging captures payload structure
+- REQ-P0-003 satisfied: Guardian session context data flow validated by test
+- REQ-P0-004 satisfied: INTENT-06 lifecycle test passes with 10 assertions
+- REQ-P0-009 satisfied: Test suite reports 0 failures (crash detection test fixed)
 
 ### Planned Decisions
-- DEC-OBS-OVERHAUL-001: Fix-forward approach for pipeline bugs — Addresses: REQ-P0-OBS-001, REQ-P0-OBS-002
-- DEC-OBS-OVERHAUL-002: Session-specific marker validation in detect_active_trace — Addresses: REQ-P0-OBS-003
-- DEC-OBS-OVERHAUL-003: jq error propagation in manifest writes — Addresses: REQ-P0-OBS-002
+- DEC-V3-001: Diagnostic-first for auto-verify — add logging, observe payload, fix extraction — Addresses: REQ-P0-001, REQ-P0-002
+- DEC-V3-004: Source source-lib.sh in test subshell to fix crash detection — Addresses: REQ-P0-009
 
 ### Work Items
 
-**C1: Verify and harden suggest.sh cohort regression path**
-- The cohort regression query (lines 258-260) works correctly in isolation but the pipeline
-  was reported as producing zero output. Investigate whether state.json entries lack
-  implemented_at timestamps (preventing cohort analysis) or whether the signal loop
-  receives no signals from analysis-cache.
-- Root cause: All 8 signals are in state.json as "implemented". The pipeline only produces
-  output for signals with cohort regressions. Currently 2 regressions exist and DO produce
-  output when run manually. The audit finding may have been from a stale analysis-cache.
-- Fix: Add defensive logging to suggest.sh so empty output is diagnosable. Validate that
-  all implemented entries in state.json have implemented_at timestamps for cohort analysis.
+**W6-1: Add diagnostic logging to check-tester.sh (#129)**
+- check-tester.sh line 91 extracts RESPONSE_TEXT from `.last_assistant_message // .response`.
+  The field may be truncated, empty, or use a different name.
+- Add stderr logging: payload keys, RESPONSE_TEXT length, AUTOVERIFY grep result,
+  secondary validation pass/fail details.
+- Trigger: log on every SubagentStop:tester invocation so next tester run reveals the issue.
 
-**C2: Add jq error handling to finalize_trace manifest write**
-- Lines 844-861: `jq ... "$manifest" > "$tmp_manifest" 2>/dev/null && mv "$tmp_manifest" "$manifest"`
-- The `2>/dev/null` hides jq parse errors (malformed manifest). If jq fails, the `&&`
-  prevents the mv but the error is invisible.
-- Fix: Remove `2>/dev/null` from the critical jq call. Log the error. Return non-zero.
-- Apply same pattern to refinalize_trace manifest write.
+**W6-2: Fix auto-verify signal extraction based on diagnostics (#129)**
+- After W6-1 logging reveals the payload structure, fix the extraction logic.
+- Likely fix: field name mismatch, truncation handling, or multi-line grep.
+- Must also verify secondary validation (confidence, coverage, caveats checks) works.
 
-**C3: Fix detect_active_trace glob race**
-- Line 649: `ls -t "${TRACE_STORE}/.active-${agent_type}-"* 2>/dev/null | head -1`
-- With concurrent same-type agents, `ls -t` returns the most recently modified marker,
-  which may belong to a different session.
-- Fix: When CLAUDE_SESSION_ID is empty, iterate markers and validate each against the
-  manifest's session_id field before returning.
+**W6-3: Guardian session context data flow test (#121)**
+- Extend tests/test-session-context.sh with 2 new tests:
+  1. Guardian injection path — source subagent-start.sh logic, verify SESSION_SUMMARY non-empty
+  2. Stats accuracy — verify trajectory fields match known synthetic input (precise counts)
 
-**H1: Heal orphaned active traces**
-- 4 orphaned .active-* markers exist (though init_trace already cleans markers >2hrs old).
-- Immediate: Run refinalize_stale_traces to heal stale manifests.
-- Verify the 1 current active marker (.active-planner-*) is this session.
+**W6-4: v2 lifecycle integration test INTENT-06 (#122)**
+- Extend tests/test-v2-e2e.sh with 1 new intent test covering 10-stage lifecycle arc:
+  session_start -> agent_start -> writes -> test_fail -> pivot detection ->
+  checkpoint -> test_pass -> session_summary -> archive -> cross-session context.
+
+**W6-5: Fix crash detection test failure**
+- Test 6 in run-hooks.sh sources context-lib.sh directly. context-lib.sh calls
+  get_claude_dir() from log.sh. Fix: source source-lib.sh instead.
+- Also: commit the doc-freshness.sh chmod fix (#125) as part of this phase.
 
 ### Critical Files
-- `hooks/context-lib.sh` — finalize_trace (lines 661-879), detect_active_trace (lines 633-656)
-- `skills/observatory/scripts/suggest.sh` — cohort regression check (lines 255-268)
-- `observatory/state.json` — implemented signal entries need implemented_at validation
+- `hooks/check-tester.sh` — Auto-verify extraction (lines 89-159), diagnostic logging
+- `tests/run-hooks.sh` — Test 6 crash detection (lines 1515-1537)
+- `tests/test-session-context.sh` — Guardian injection tests
+- `tests/test-v2-e2e.sh` — Lifecycle integration test INTENT-06
 
 ### Decision Log
 <!-- Guardian appends here after phase completion -->
 
 
-## Phase 1: Data Quality (Trace Accuracy)
-**Status:** completed
-**Decision IDs:** DEC-OBS-OVERHAUL-001
-**Requirements:** REQ-P0-OBS-004, REQ-P0-OBS-006, REQ-P0-OBS-007
-**Issues:** #103, #104, #105, #106
+## Phase 7: Proof-of-Work Chain Completion
+**Status:** planned
+**Decision IDs:** DEC-V3-003
+**Requirements:** REQ-P0-005, REQ-P0-006, REQ-P0-007, REQ-P0-008, REQ-P0-010
+**Issues:** #41, #42, #43, #44, #92, #134, #135, #136
 **Definition of Done:**
-- REQ-P0-OBS-004 satisfied: index.jsonl has entries for all manifest files
-- REQ-P0-OBS-006 satisfied: observatory test suite passes on main without worktree deps
-- REQ-P0-OBS-007 satisfied: .test-status fallback resolves unknown test results
+- REQ-P0-005 satisfied: session-summary.sh reports proof status
+- REQ-P0-006 satisfied: subagent-start.sh injects proof status for implementer
+- REQ-P0-007 satisfied: test-proof-chain.sh passes all test cases
+- REQ-P0-008 satisfied: HOOKS.md session-init.sh description mentions proof clearing
+- REQ-P0-010 satisfied: guard.sh has 0 rewrite() calls remaining
+
+### Planned Decisions
+- DEC-V3-003: Adapt #41-44 to current architecture (tester owns proof, not implementer) — Addresses: REQ-P0-005, REQ-P0-006, REQ-P0-007, REQ-P0-008
 
 ### Work Items
 
-**H2: Validate .test-status fallback effectiveness**
-- finalize_trace already has .test-status fallback (lines 727-743). refinalize_trace
-  also has it (lines 961-1012) with timestamp window validation.
-- 74% of traces still show unknown — investigate why the fallback isn't resolving them.
-  Likely: .test-status doesn't exist at finalize time (agent hasn't written it yet),
-  and refinalize hasn't been run since the fix shipped.
-- Fix: Run refinalize_stale_traces to heal existing traces. Verify fallback logic is correct.
+**W7-1: Add proof status to session-summary.sh (#42 residual)**
+- After the GIT_LINE test status block (line 137), add proof status:
+  Read .proof-status file. Append "Proof: verified." / "Proof: PENDING." / "Proof: not started."
+- 5 lines of code.
 
-**H3: Rebuild index to sync with manifests**
-- 39 index entries vs 43 manifests. 4 traces missing from index.
-- Fix: Run rebuild_index() to resync. Add a pre-flight check to analyze.sh that
-  detects index/manifest count mismatch and auto-rebuilds.
+**W7-2: Add proof status injection to subagent-start.sh (#42 residual)**
+- Under the `implementer)` case, after the existing proof-status instruction (line 103):
+  Read .proof-status and inject current status with contextual guidance.
+  - verified: "Proof: verified -- user confirmed feature works."
+  - pending: "WARNING: Proof PENDING -- source changed after last verification."
+  - missing: "Proof: not started -- Phase 4 is REQUIRED before commit."
+- 10 lines of code.
 
-**H5: Fix missing start_commit/end_commit in traces**
-- 10 traces missing end_commit, 6 missing start_commit per audit.
-- Root cause: end_commit only captured when project_root is a git repo AND git rev-parse
-  succeeds. For worktree-based work that was already merged/deleted, this fails.
-- Fix: start_commit is already captured in init_trace. end_commit capture in finalize_trace
-  (line 838) is correct but only runs if project_root has a .git dir. For the existing
-  traces, this is data that cannot be retroactively recovered.
+**W7-3: Write test-proof-chain.sh contract tests (#43, adapted)**
+- Adapted from original 18-test plan. Revised for current architecture:
+  - guard.sh Check 8: deny commit without verified (4 tests: no-file, pending, verified, meta-repo)
+  - guard.sh Check 9: deny Bash writes to .proof-status (2 tests: block write, allow non-write)
+  - guard.sh Check 10: deny deletion of active .proof-status (2 tests: block pending delete, allow verified delete)
+  - track.sh invalidation: verified->pending on source change (4 tests: source/test/doc/already-pending)
+  - task-track.sh Gate C: Guardian requires verified when file exists (3 tests: verified/pending/missing)
+  - session-init.sh clearing: stale .proof-status cleaned at start (2 tests: cleaned/no-error)
+  - session-summary.sh proof reporting (1 test: proof line present)
+- Total: 18 tests in isolated temp git repo. TAP-compatible output.
 
-**M5: Fix observatory tests — remove worktree dependency**
-- 4 test files depend on feature branch worktrees that no longer exist.
-- Fix: Make tests self-contained — create temporary test fixtures instead of depending
-  on worktree state. Use `mktemp -d` for isolated test environments.
+**W7-4: Update HOOKS.md documentation (#44 residual)**
+- session-init.sh description: add "Clears stale .proof-status (crash recovery)"
+- Verify all other HOOKS.md proof-related documentation is accurate (spot-check done in
+  planning phase — .proof-status state file row, check-implementer.sh description,
+  guard.sh Checks 8-10 documentation all accurate).
+
+**W7-5: Final guard.sh rewrite() audit (#92)**
+- Grep for remaining rewrite() calls. #98 converted Check 1 (/tmp) and Check 3 (--force).
+- Verify Check 0.5 (CWD recovery) and Check 5/5b (worktree deletion) are also converted.
+- Confirm 0 rewrite() calls remain. Close #92.
+
+### #41-44 Disposition
+
+Based on comprehensive codebase audit (2026-02-19):
+
+**#41 — Phase 1: Audit proof-of-work chain links**
+- guard.sh Check 8: DONE and working (worktree fallback, meta-repo exemption, commit+merge).
+- check-implementer.sh Check 5: ARCHITECTURE CHANGED. DEC-IMPL-STOP-001 moved proof to
+  tester agent. check-implementer.sh has no proof check by design (builder/judge separation).
+- track.sh invalidation: DONE and working (verified->pending on source, skips tests/docs).
+- HOOKS.md discrepancy: DONE. Accurately reflects advisory-only + tester-moved proof.
+- **Remaining**: Contract tests (acceptance criteria never written). Addressed by W7-3.
+- **Close when**: W7-3 test-proof-chain.sh passes.
+
+**#42 — Phase 2: Fill session lifecycle gaps for proof status**
+- session-init.sh proof clearing: DONE (lines 355-368, crash recovery path).
+- session-summary.sh proof reporting: NOT DONE. Addressed by W7-1.
+- subagent-start.sh proof injection: PARTIALLY DONE (tells implementer not to write,
+  but doesn't inject current status). Addressed by W7-2.
+- **Close when**: W7-1 and W7-2 merged plus W7-3 covers session lifecycle tests.
+
+**#43 — Phase 3: Contract test for proof-of-work chain**
+- test-proof-chain.sh: NOT DONE. File does not exist.
+- Original 18-test plan needs adaptation (no check-implementer.sh proof tests,
+  add Check 9/10 and task-track.sh Gate C tests). Addressed by W7-3.
+- **Close when**: W7-3 merged with all 18 tests passing.
+
+**#44 — Phase 4: Documentation and HOOKS.md accuracy**
+- HOOKS.md check-implementer.sh: DONE. Accurately says "Advisory only...moved to tester."
+- HOOKS.md .proof-status state file: DONE. Complete lifecycle documented.
+- HOOKS.md session-init.sh proof clearing: NOT DONE. Addressed by W7-4.
+- CLAUDE.md Sacred Practice #10: DONE. Accurate.
+- CLAUDE.md pre-dispatch gate: DONE. task-track.sh Gate C is blocking (deny).
+- **Close when**: W7-4 merged.
 
 ### Critical Files
-- `hooks/context-lib.sh` — rebuild_index (lines 1291-1326), refinalize_stale_traces (lines 1220-1273)
-- `tests/test-observatory-*.sh` — 4 test files with worktree dependencies
-- `traces/index.jsonl` — trace index (39 entries, should be 43)
+- `hooks/session-summary.sh` — Proof status addition (after line 137)
+- `hooks/subagent-start.sh` — Proof injection for implementer (after line 103)
+- `hooks/guard.sh` — rewrite() audit, Checks 8-10
+- `hooks/task-track.sh` — Gate C (Guardian proof requirement)
+- `tests/test-proof-chain.sh` — New file: 18 contract tests
+- `hooks/HOOKS.md` — session-init.sh description update
 
 ### Decision Log
 <!-- Guardian appends here after phase completion -->
 
 
-## Phase 2: Pipeline Completion (Observatory Enhancement)
-**Status:** completed
-**Decision IDs:** DEC-OBS-OVERHAUL-001
-**Requirements:** REQ-P1-004, REQ-P1-005, REQ-P2-001
-**Issues:** #107, #108, #109, #110
+## Phase 8: Shared Library Consolidation
+**Status:** planned
+**Decision IDs:** DEC-V3-005
+**Requirements:** REQ-P1-001, REQ-P1-002, REQ-P1-003
+**Issues:** #7, #137
 **Definition of Done:**
-- analyze.sh produces accurate signal counts including oldTraces/ context
-- Assessment report reflects latest analysis-cache
-- Session-init structured development log digest implemented
+- Session file lookup consolidated into context-lib.sh (one implementation, 4 callers)
+- compact-preserve.sh sources context-lib.sh (no inline reimplementation)
+- 9 hooks converted from raw jq to get_field()
+- All existing tests continue to pass
+
+### Planned Decisions
+- DEC-V3-005: Mechanical refactoring with zero behavioral change — Addresses: REQ-P1-001, REQ-P1-002, REQ-P1-003
+  Rationale: All changes are structural (function calls replace inline code). No logic changes.
+  The shared library version of get_session_changes() is the weakest implementation — the
+  inline copies in compact-preserve.sh and surface.sh have glob fallback and legacy support
+  that the shared version lacks. Port the robust version into context-lib.sh, then replace
+  all inline copies.
 
 ### Work Items
 
-**H4: Count oldTraces/ in observatory analysis**
-- analyze.sh Stage 2 (artifact health scan) only counts depth-1 dirs in traces/.
-  The 489 traces in oldTraces/ are invisible.
-- Fix: Extend the artifact health scan to optionally include oldTraces/ as a
-  historical reference dataset. Do not add them to the active index — they are
-  archived data. Add a `historical_traces` section to analysis-cache.json.
+**W8-1: Port robust session lookup into context-lib.sh**
+- compact-preserve.sh (lines 43-56) has the most robust implementation: glob fallback + legacy
+  .session-decisions support. Port this into get_session_changes() in context-lib.sh.
+- Replace inline implementations in: compact-preserve.sh, surface.sh, session-summary.sh.
 
-**M1: Auto-regenerate assessment report**
-- Assessment report is generated before latest analysis cache, making it stale.
-- Fix: Add a timestamp check in report.sh — if analysis-cache.json is newer than
-  the assessment report, regenerate before rendering.
+**W8-2: Refactor compact-preserve.sh to source context-lib.sh**
+- compact-preserve.sh is the only hook that reimplements context-lib equivalent operations.
+- Replace 3 inline blocks with: get_git_state(), get_plan_status(), get_session_changes().
+- Keep COMMIT_COUNT as a one-liner supplement (not in shared lib).
 
-**M2: Historical baseline detection improvement**
-- NO_HISTORICAL_BASELINE flag may false-fire when all traces are from today,
-  suppressing trend analysis even when there are multiple runs within a day.
-- Fix: Use run count (>1 analysis-cache.prev.json exists) instead of calendar day
-  uniqueness as the baseline indicator.
+**W8-3: Convert raw jq to get_field() across 9 hooks**
+- Affected: code-review.sh, plan-validate.sh, test-runner.sh, plan-check.sh (partially),
+  notify.sh, forward-motion.sh, subagent-start.sh, surface.sh, session-summary.sh,
+  prompt-submit.sh.
+- Mechanical: `echo "$HOOK_INPUT" | jq -r '.field'` becomes `get_field "field"`.
 
-**M3: Session-init structured development log digest**
-- Currently session-init shows last trace info but not a structured summary of
-  recent development activity.
-- Fix: Build a compact digest from the last 5 traces: agent type, outcome, duration,
-  files changed. Inject as structured context at session start.
+**W8-4: Fix context-lib.sh permissions**
+- chmod 755 (currently 644). All other .sh files are 755. Sourced not executed, but inconsistent.
+
+**W8-5: Fix session-summary.sh SOURCE_EXTENSIONS hardcode**
+- Line 64 hardcodes the extension list. context-lib.sh exports $SOURCE_EXTENSIONS.
+- Replace hardcoded string with variable reference.
 
 ### Critical Files
-- `skills/observatory/scripts/analyze.sh` — Stage 2 artifact scan, Stage 0 baseline detection
-- `skills/observatory/scripts/report.sh` — Assessment report generation
-- `hooks/session-init.sh` — Development log digest injection
+- `hooks/context-lib.sh` — get_session_changes() upgrade, SOURCE_EXTENSIONS export
+- `hooks/compact-preserve.sh` — Refactor to source context-lib.sh
+- `hooks/surface.sh` — Replace inline session lookup
+- `hooks/log.sh` — get_field() function (already exists, just need consumers)
 
 ### Decision Log
 <!-- Guardian appends here after phase completion -->
 
-
-## Phase 3: v2 Session Event Log (Foundation)
-**Status:** completed
-**Decision IDs:** DEC-V2-001, DEC-V2-003, DEC-V2-004, DEC-V2-SCHEMA-001
-**Requirements:** REQ-P0-001, REQ-P0-002, REQ-P0-003
-**Issues:** #81, #116, #117
-**Definition of Done:**
-- REQ-P0-001 satisfied: `.session-events.jsonl` written with structured events
-- REQ-P0-002 satisfied: `get_session_trajectory()` returns accurate aggregates
-- REQ-P0-003 satisfied: Events archived to `~/.claude/sessions/<project>/` on session end
-
-### Implementation Status
-All P0 requirements validated and tested:
-- `append_session_event()` in context-lib.sh (functional, schema-validated)
-- `get_session_trajectory()` in context-lib.sh (functional, accuracy-validated)
-- Session archive in session-end.sh (functional, writes index.jsonl, schema-validated)
-- `get_prior_sessions()` in context-lib.sh (functional)
-- Guardian commit event emission via SHA comparison (W3-1)
-- 11-test schema compliance suite (W3-5, W3-6)
-
-### Decision Log
-- DEC-V2-001: Session events as JSONL append-only log — Implemented in context-lib.sh `append_session_event()`. All event types conform to schema.
-- DEC-V2-003: Session archive indexed by project hash — Implemented in session-end.sh. Archive index entries validated by test suite (W3-6).
-- DEC-V2-004: Trajectory data as shell variables, not JSON — Implemented in `get_session_trajectory()`. Accuracy validated against synthetic event logs.
-- DEC-V2-SCHEMA-001: Schema compliance tests validate event structure at unit level — 11 tests in test-event-schema.sh cover all event types, graceful degradation, and aggregate accuracy.
-
-
-## Phase 4: v2 Checkpoints & Rewind
-**Status:** completed
-**Decision IDs:** DEC-V2-002
-**Requirements:** REQ-P0-004, REQ-P0-005
-**Issues:** #82, #118, #119, #120
-**Definition of Done:**
-- REQ-P0-004 satisfied: Checkpoint refs created at correct frequency
-- REQ-P0-005 satisfied: `/rewind` restores working tree to checkpoint state
-
-### Implementation Status
-- `hooks/checkpoint.sh` registered in settings.json — creates refs on Write/Edit tool calls
-- `skills/rewind/SKILL.md` — full restore protocol with `git checkout` + `git clean -fd -e .claude/`
-- 8-test round-trip suite validates checkpoint creation, sequential numbering, restore accuracy, untracked file cleanup, .claude/ exclusion, counter reset, and worktree context
-
-### P0 Requirement Coverage
-- REQ-P0-004 (checkpoint refs): Addressed by DEC-V2-002 — checkpoint.sh creates `refs/checkpoints/<branch>/N` every 5 writes and on first modification of new files. Validated by tests 1-4, 7-8.
-- REQ-P0-005 (rewind restore): Addressed by DEC-V2-002 — SKILL.md Step 3 restores tracked files via `git checkout SHA -- .` and removes untracked files via `git clean -fd -e .claude/`. Validated by tests 1, 5-6.
-
-### Deferred (P1)
-- W4-5: Checkpoint frequency auto-tuning (REQ-P1-002)
-- W4-6: Cross-session friction pattern detection (REQ-P1-003)
-
-### Decision Log
-- DEC-V2-002: Git ref-based checkpoints via plumbing commands — Implemented in checkpoint.sh (creation) and SKILL.md (restore). Critical bug fix: original SKILL.md lacked `git clean -fd -e .claude/` after restore, leaving untracked files from after the checkpoint. Fixed in W4-1 (#118). Round-trip test suite (W4-3 #119, W4-4 #120) validates full lifecycle including worktree context.
-
-
-## Phase 5: v2 Session-Aware Hooks + Commit Context
-**Status:** completed
-**Decision IDs:** DEC-V2-005
-**Requirements:** REQ-P0-006, REQ-P0-007
-**Issues:** #83, #84, #121, #122
-**Definition of Done:**
-- REQ-P0-006 satisfied: Non-trivial commits include `--- Session Context ---` block
-- REQ-P0-007 satisfied: test-gate provides trajectory-based guidance on strike 2+
-
-### Implementation Status
-All P0 requirements validated and tested:
-- `get_session_summary_context()` in context-lib.sh generates structured commit context blocks for non-trivial sessions (>5 tool calls)
-- `detect_approach_pivots()` in context-lib.sh identifies edit-fail loops as approach pivots
-- `subagent-start.sh` injects session summary when spawning Guardian agents
-- `test-gate.sh` provides trajectory-aware guidance on strike 2+ (file-specific, assertion-specific)
-- 76 tests across 3 test files validate the complete session-aware hook lifecycle
-
-### P0 Requirement Coverage
-- REQ-P0-006 (session context in commits): Addressed by DEC-V2-005 — guardian.md protocol + subagent-start.sh injection + get_session_summary_context(). Validated by test-session-context.sh (10 tests including Guardian injection path).
-- REQ-P0-007 (trajectory-based test guidance): Addressed by DEC-V2-005 — test-gate.sh uses get_session_trajectory() to provide file-specific and assertion-specific guidance. Validated by test-trajectory.sh (17 tests including 52-event scale test).
-
-### File Changes
-
-| File | Change |
-|------|--------|
-| `agents/guardian.md` | Add session context protocol (~20 lines) |
-| `hooks/subagent-start.sh` | Inject session summary when spawning Guardian (~15 lines) |
-| `hooks/context-lib.sh` | Add `get_session_summary_context()`, `detect_approach_pivots()` |
-| `hooks/test-gate.sh` | Trajectory-aware guidance on strike 2+ (~30 lines replacement) |
-| `tests/test-session-context.sh` | +2 tests: Guardian injection path, trajectory accuracy |
-| `tests/test-trajectory.sh` | +1 scale test with 3 assertions (52 events, pivot detection) |
-| `tests/test-v2-e2e.sh` | +14 lifecycle assertions (9-stage full session arc) |
-
-### Decision Log
-- DEC-V2-005: Session context in commits as structured text block — Implemented in guardian.md (protocol), subagent-start.sh (injection), context-lib.sh (generation). Non-trivial sessions (>5 tool calls) produce a `--- Session Context ---` block with Intent, Approach, Friction, Rejected, Open, and Stats fields. Trivial sessions omit the block. Validated by 10 unit tests + 17 trajectory tests + 49 e2e lifecycle tests.
-
-
-## Event Log Schema
-
-```jsonl
-{"ts":"ISO8601","event":"session_start","project":"name","branch":"branch"}
-{"ts":"ISO8601","event":"write","file":"path","lines_changed":N}
-{"ts":"ISO8601","event":"checkpoint","ref":"refs/checkpoints/branch/N","trigger":"reason"}
-{"ts":"ISO8601","event":"test_run","result":"pass|fail","failures":N,"assertion":"name"}
-{"ts":"ISO8601","event":"gate_eval","hook":"name","result":"allow|block","reason":"text"}
-{"ts":"ISO8601","event":"agent_start","type":"agent_type","trace_id":"id"}
-{"ts":"ISO8601","event":"agent_stop","type":"agent_type","duration_min":N,"pivots":N}
-{"ts":"ISO8601","event":"commit","sha":"hash","message":"text"}
-```
-
-## Session Summary Schema (index.jsonl)
-
-```json
-{
-  "id": "session-id",
-  "project": "name",
-  "started": "ISO8601",
-  "duration_min": N,
-  "files_touched": ["path1", "path2"],
-  "tool_calls": N,
-  "checkpoints": N,
-  "pivots": N,
-  "friction": ["description1"],
-  "outcome": "committed|tests-passing|tests-failing",
-  "summary": "narrative text"
-}
-```
 
 ## Worktree Strategy
 
 Main is sacred. Each phase works in its own worktree:
-- **Phase 0:** `~/.claude/.worktrees/obs-overhaul-phase-0` on branch `fix/obs-critical`
-- **Phase 1:** `~/.claude/.worktrees/obs-overhaul-phase-1` on branch `fix/obs-data-quality`
-- **Phase 2:** `~/.claude/.worktrees/obs-overhaul-phase-2` on branch `feature/obs-pipeline-completion`
-- **Phases 3-5:** Sequential worktrees after overhaul merges
+- **Phase 6:** `~/.claude/.worktrees/v3-auto-verify` on branch `fix/auto-verify-pipeline`
+- **Phase 7:** `~/.claude/.worktrees/v3-proof-chain` on branch `fix/proof-chain-completion`
+- **Phase 8:** `~/.claude/.worktrees/v3-shared-lib` on branch `refactor/shared-library`
 
-Implementation order: Phase 0 (critical fixes, must be first) -> Phase 1 (data quality,
-depends on Phase 0 healing) -> Phase 2 (pipeline completion) -> Phases 3-5 (v2 features,
-deferred until observatory is healthy).
+Implementation order: Phase 6 first (auto-verify is the highest-impact reliability gap),
+then Phase 7 (proof chain depends on understanding payload structure from Phase 6 diagnostics),
+then Phase 8 (pure refactoring, no behavioral change, lowest risk).
 
-Phase 0 and Phase 1 can be done in rapid succession (same worktree if desired).
-Phase 2 is independent and can parallelize with Phase 1.
+Stale worktrees to clean before starting: feature/guard-fix, feature/v2-session-hooks
+(both merged, clean — Guardian should remove on first dispatch).
 
 ## References
 
 ### State Files
 | File | Scope | Written By | Read By |
 |------|-------|-----------|---------|
+| `.proof-status` | Cross-session | task-track.sh (creates), tester (writes pending), prompt-submit.sh/check-tester.sh (writes verified), track.sh (invalidates) | guard.sh, task-track.sh, session-init.sh, session-summary.sh (planned), subagent-start.sh (planned) |
 | `.session-events.jsonl` | Session | track.sh, guard.sh, checkpoint.sh | context-lib.sh, session-summary.sh |
-| `~/.claude/sessions/<project>/<session>.jsonl` | Persistent | session-end.sh | session-init.sh |
-| `~/.claude/sessions/<project>/index.jsonl` | Persistent | session-end.sh | session-init.sh |
-| `refs/checkpoints/<branch>/N` | Branch-scoped | checkpoint.sh | /rewind, Guardian |
-| `observatory/state.json` | Persistent | observatory skill | suggest.sh, analyze.sh |
-| `observatory/analysis-cache.json` | Persistent | analyze.sh | suggest.sh, report.sh |
-| `traces/index.jsonl` | Persistent | finalize_trace, rebuild_index | analyze.sh, session-init.sh |
+| `.test-status` | Cross-session | test-runner.sh | guard.sh, test-gate.sh, session-summary.sh, check-implementer.sh, check-guardian.sh, subagent-start.sh |
 
-### Audit Findings Reference
-| ID | Severity | Summary | Phase |
-|----|----------|---------|-------|
-| C1 | Critical | suggest.sh pipeline produces zero output (all signals implemented, cohort regression path untested) | 0 |
-| C2 | Critical | Silent jq failures in finalize/refinalize manifest writes | 0 |
-| C3 | Critical | detect_active_trace glob race with concurrent agents | 0 |
-| H1 | High | 4 orphaned active trace markers (>16h old) | 0 |
-| H2 | High | 74% of traces have test_result="unknown" | 1 |
-| H3 | High | Index out of sync: 39 entries vs 43 manifests | 1 |
-| H4 | High | oldTraces/ (489) not counted in observatory analysis | 2 |
-| H5 | High | 10 traces missing end_commit, 6 missing start_commit | 1 |
-| M1 | Medium | Assessment report stale — generated before latest analysis cache | 2 |
-| M2 | Medium | Historical baseline detection may false-flag | 2 |
-| M3 | Medium | Session-init lacks structured development log digest | 2 |
-| M4 | Medium | Phase 4 Cross-Session Learning not implemented | 3 (already done) |
-| M5 | Medium | Observatory tests depend on feature branch worktrees | 1 |
-| M6 | Medium | SUG-file mapping fragile — renumbering on each run | N/A (by design, DEC-OBS-022) |
+### Issue Cross-Reference
+| Issue | Plan Item | Disposition |
+|-------|-----------|-------------|
+| #129 | W6-1, W6-2 | Auto-verify signal extraction fix |
+| #130 | W6-1, W6-2 | Phase 6 tracking issue for auto-verify |
+| #131 | W6-5 | Test suite fix + doc-freshness chmod |
+| #132 | W6-3 | Guardian session context data flow test |
+| #133 | W6-4 | v2 lifecycle integration test INTENT-06 |
+| #125 | W6-5 | doc-freshness.sh chmod (already done, needs commit) |
+| #121 | W6-3 | Guardian session context data flow test (original) |
+| #122 | W6-4 | v2 lifecycle integration test INTENT-06 (original) |
+| #134 | W7-1, W7-2 | Session lifecycle proof gaps |
+| #135 | W7-3 | Contract test test-proof-chain.sh |
+| #136 | W7-4, W7-5 | HOOKS.md accuracy + guard.sh rewrite sweep |
+| #137 | W8-1 through W8-5 | Shared library consolidation |
+| #41 | W7-3 | Proof chain audit — mostly done, needs contract tests |
+| #42 | W7-1, W7-2 | Session lifecycle proof gaps — 2 items remaining |
+| #43 | W7-3 | Contract test script — adapted for current architecture |
+| #44 | W7-4 | HOOKS.md accuracy — 1 item remaining |
+| #92 | W7-5 | guard.sh rewrite() final sweep |
+| #7 | W8-1 through W8-5 | Shared library consolidation (original) |
+
+### Parked Issues (not this plan)
+| Issue | Reason |
+|-------|--------|
+| #115 | Multi-instance plan scoping — separate plan (touches 14+ hooks) |
+| #94 | Hook status visualization — enhancement, not hardening |
+| #93 | Link verification — P1, after hardening |
+| #35 | Self-audit harness — P1, after hardening |
+| #97/#96/#95 | Upstream-blocked |
+| #46/#22/#17/#8 | Separate initiatives |
+| #69/#67/#61/#57/#58 | todo.sh / standards — separate initiatives |
