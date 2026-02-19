@@ -1,6 +1,6 @@
 """HTTP utilities for deep-research skill (stdlib only).
 
-@decision DEC-TIMEOUT-004, DEC-TIMEOUT-005
+@decision DEC-TIMEOUT-004, DEC-TIMEOUT-005, DEC-TIMEOUT-007
 @title Stdlib-only HTTP with SSE streaming and extended timeouts
 @status accepted
 @rationale Deep research APIs need extended timeouts (60s default) for polling and
@@ -11,6 +11,12 @@ with thinking summaries (DEC-TIMEOUT-005). Uses urllib to parse SSE line protoco
 (data:, event:, id: fields, blank line delimiters). Retries connection failures
 with exponential backoff, but does not retry during streaming (fail fast on zombie
 connections).
+
+DEC-TIMEOUT-007: stream_sse() accepts a read_timeout parameter (default: None).
+When set, the underlying socket's read timeout is lowered after the connection is
+established. This causes readline() to raise TimeoutError after read_timeout seconds
+of server silence, which the caller can use to detect and escape zombie streams. The
+existing TimeoutError handler in the streaming loop converts it to an HTTPError.
 
 Supports retry with exponential backoff for transient failures and rate limits.
 """
@@ -237,6 +243,7 @@ def stream_sse(
     url: str,
     headers: Optional[Dict[str, str]] = None,
     timeout: int = 30,
+    read_timeout: Optional[float] = None,
 ) -> Generator[Dict[str, str], None, None]:
     """Open an SSE connection and yield parsed events.
 
@@ -247,13 +254,18 @@ def stream_sse(
     Args:
         url: SSE endpoint URL
         headers: Optional headers dict
-        timeout: Socket timeout in seconds for readline operations
+        timeout: Socket timeout in seconds for the initial connection
+        read_timeout: Per-read socket timeout in seconds, applied after the
+            connection is established. When the server goes silent, readline()
+            will raise TimeoutError after this many seconds instead of waiting
+            for the full connection timeout. None means use the connection timeout.
+            See DEC-TIMEOUT-007.
 
     Yields:
         Dict with keys 'event', 'data', 'id' (all strings, may be empty)
 
     Raises:
-        HTTPError: On connection failure or HTTP error
+        HTTPError: On connection failure, HTTP error, or read timeout
     """
     headers = headers or {}
     headers.setdefault("User-Agent", USER_AGENT)
@@ -269,6 +281,35 @@ def stream_sse(
     for attempt in range(MAX_RETRIES):
         try:
             response = urllib.request.urlopen(req, timeout=timeout)
+            # Apply a shorter per-read timeout after connection is established.
+            # This is the zombie detection mechanism (DEC-TIMEOUT-007): if the
+            # server goes silent mid-stream, readline() will raise TimeoutError
+            # after read_timeout seconds rather than blocking for the full
+            # connection timeout. The response.fp object is the underlying
+            # socket file-like object; its _sock attribute is the raw socket.
+            if read_timeout is not None:
+                try:
+                    # Locate the raw socket. The attribute path varies by Python
+                    # version:
+                    #   Python <=3.11: response.fp._sock  (SocketIO directly on fp)
+                    #   Python >=3.12: response.fp.raw._sock  (fp is BufferedReader
+                    #                  wrapping a SocketIO)
+                    # We try both paths so the zombie detection works across versions.
+                    # See DEC-TIMEOUT-007.
+                    raw_sock = None
+                    if hasattr(response, 'fp'):
+                        fp = response.fp
+                        if hasattr(fp, '_sock'):
+                            raw_sock = fp._sock          # Python <=3.11
+                        elif hasattr(fp, 'raw') and hasattr(fp.raw, '_sock'):
+                            raw_sock = fp.raw._sock      # Python >=3.12
+                    if raw_sock is not None:
+                        raw_sock.settimeout(read_timeout)
+                        log(f"SSE read_timeout set to {read_timeout}s")
+                    else:
+                        log("SSE read_timeout requested but socket not accessible")
+                except (AttributeError, OSError) as e:
+                    log(f"SSE read_timeout could not be set: {e}")
             log("SSE connection established")
             break
         except urllib.error.HTTPError as e:

@@ -1,6 +1,6 @@
 """Gemini deep research provider client.
 
-@decision DEC-TIMEOUT-002, DEC-TIMEOUT-006
+@decision DEC-TIMEOUT-002, DEC-TIMEOUT-006, DEC-TIMEOUT-007
 @title Gemini Interactions API with SSE streaming and thinking summaries
 @status accepted
 @rationale Deep research runs as a background interaction that can take up to 30
@@ -8,10 +8,21 @@ minutes. We POST with background=true only to create the interaction (DEC-TIMEOU
 Primary mode: SSE streaming via GET /v1beta/interactions/{id}?alt=sse to receive
 real-time thinking summaries and content deltas (DEC-TIMEOUT-006). The SSE stream
 provides agent_config behavior automatically. Fallback mode: polling GET
-/v1beta/interactions/{id} every 5-30s (adaptive) up to 1800s total. Zombie detection:
-if no SSE events arrive for 300s, raise "appears stuck" error. The Interactions API
-is a separate endpoint from the standard Gemini generateContent API. Uses v1beta API
-with API key auth (not OAuth).
+/v1beta/interactions/{id} every 5-30s (adaptive) up to 1800s total.
+
+DEC-TIMEOUT-007: Zombie detection via socket read_timeout replaces dead in-loop check.
+The previous implementation checked silence_duration inside the for-event loop, which
+was always ~0ms when events were arriving (the only time the check ran). If the server
+went silent mid-stream, the script would block in readline() for up to MAX_TIMEOUT_SECONDS
+(30 minutes) before the connection timeout fired. The fix passes SSE_READ_TIMEOUT=120s
+to http.stream_sse(), which sets the socket's per-read timeout after the connection is
+established. Now readline() raises TimeoutError after 120s of server silence, which the
+existing SSE error handler converts to an HTTPError and the research() fallback path
+catches to fall through to polling. ZOMBIE_THRESHOLD is retained for documentation but
+is no longer used in active code.
+
+The Interactions API is a separate endpoint from the standard Gemini generateContent
+API. Uses v1beta API with API key auth (not OAuth).
 """
 
 import json
@@ -25,7 +36,8 @@ from .errors import ProviderError, ProviderTimeoutError, ProviderRateLimitError,
 BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 AGENT = "deep-research-pro-preview-12-2025"
 MAX_TIMEOUT_SECONDS = 1800  # 30 minutes total timeout
-ZOMBIE_THRESHOLD = 300  # 5 minutes without events = stuck
+ZOMBIE_THRESHOLD = 300  # 5 minutes — retained for reference, replaced by SSE_READ_TIMEOUT
+SSE_READ_TIMEOUT = 120  # Socket read timeout for SSE streams (DEC-TIMEOUT-007)
 
 
 def _submit_request(api_key: str, topic: str) -> Dict[str, Any]:
@@ -151,8 +163,12 @@ def _stream_response(api_key: str, interaction_id: str) -> str:
     - interaction.complete: return accumulated report
     - error: raise HTTPError
 
-    Zombie detection: if no events arrive for 300s, raise "appears stuck" error.
-    Overall timeout: 1800s total.
+    Zombie detection via socket read_timeout (DEC-TIMEOUT-007): stream_sse() is called
+    with read_timeout=SSE_READ_TIMEOUT (120s). If the server goes silent, readline()
+    raises TimeoutError after 120s, which stream_sse() converts to an HTTPError. The
+    caller (research()) catches that HTTPError and falls through to polling.
+
+    Overall timeout: MAX_TIMEOUT_SECONDS (1800s) total.
 
     Args:
         api_key: Gemini API key
@@ -162,7 +178,7 @@ def _stream_response(api_key: str, interaction_id: str) -> str:
         Complete report text
 
     Raises:
-        http.HTTPError: On API error, timeout, or zombie detection
+        http.HTTPError: On API error, timeout, or SSE silence timeout
     """
     url = f"{BASE_URL}/interactions/{interaction_id}?alt=sse"
     headers = {
@@ -171,13 +187,18 @@ def _stream_response(api_key: str, interaction_id: str) -> str:
     }
 
     start_time = time.time()
-    last_event_time = start_time
+    event_count = 0
     report_parts: List[str] = []
 
     try:
-        for event in http.stream_sse(url, headers=headers, timeout=MAX_TIMEOUT_SECONDS):
-            last_event_time = time.time()
-            elapsed = last_event_time - start_time
+        for event in http.stream_sse(
+            url,
+            headers=headers,
+            timeout=MAX_TIMEOUT_SECONDS,
+            read_timeout=SSE_READ_TIMEOUT,
+        ):
+            event_count += 1
+            elapsed = time.time() - start_time
 
             # Overall timeout check
             if elapsed >= MAX_TIMEOUT_SECONDS:
@@ -195,7 +216,7 @@ def _stream_response(api_key: str, interaction_id: str) -> str:
                     http.log(f"Failed to parse event data as JSON: {data_str[:100]}")
                     continue
 
-            http.log(f"SSE event: {event_type} (elapsed={int(elapsed)}s)")
+            http.log(f"SSE event: {event_type} (elapsed={int(elapsed)}s, count={event_count})")
 
             # Handle different event types
             if event_type == "interaction.start":
@@ -231,14 +252,18 @@ def _stream_response(api_key: str, interaction_id: str) -> str:
                 elapsed = time.time() - start_time
                 raise ProviderAPIError("gemini", 0, error_msg, elapsed)
 
-            # Zombie detection: check if we've been silent too long
-            silence_duration = time.time() - last_event_time
-            if silence_duration > ZOMBIE_THRESHOLD:
-                elapsed = time.time() - start_time
-                raise ProviderTimeoutError("gemini", ZOMBIE_THRESHOLD, elapsed)
-
-    except http.HTTPError:
-        # Re-raise HTTP errors as-is
+    except http.HTTPError as e:
+        # Log informative message when SSE silent timeout triggers (DEC-TIMEOUT-007)
+        elapsed = time.time() - start_time
+        minutes = int(elapsed) // 60
+        seconds = int(elapsed) % 60
+        if "TimeoutError" in str(e) or "SSE stream error" in str(e):
+            sys.stderr.write(
+                f"  [Gemini] SSE silent for {SSE_READ_TIMEOUT}s after {event_count} events"
+                f" ({minutes}m {seconds:02d}s) — falling back to polling\n"
+            )
+            sys.stderr.flush()
+        # Re-raise to let research() decide whether to fall back to polling
         raise
     except Exception as e:
         # Wrap other exceptions
