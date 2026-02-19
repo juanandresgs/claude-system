@@ -25,7 +25,7 @@ set -euo pipefail
 # Enforces via deny (hard blocks):
 #   - Main is sacred (no commits on main/master)
 #   - No force push to main/master
-#   - No destructive git commands (reset --hard, clean -f, branch -D/--delete --force)
+#   - No destructive git commands (reset --hard, clean -f, branch -D without Guardian + merge check)
 #   - cd/pushd into .worktrees/ (use subshell or git -C instead)
 #   - git worktree remove without cd to main first
 #   - rm -rf .worktrees/ without cd to main first
@@ -379,16 +379,58 @@ if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bclean\s+.*-f'; then
 fi
 
 if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bbranch\s+(-D\b|.*\s-D\b|.*--delete\s+--force|.*--force\s+--delete)'; then
-    deny "git branch -D / --delete --force force-deletes a branch even if unmerged. Use git branch -d (lowercase) for safe deletion."
+    # @decision DEC-GUARD-BRANCH-D-001
+    # @title Conditional git branch -D: Guardian-only with merge verification
+    # @status accepted
+    # @rationale Guardian needs git branch -D to clean up branches after merging.
+    #   Previously Check 4 hard-denied -D for ALL callers, forcing Guardian to ask
+    #   the user to run cleanup manually every time. Now: non-Guardian callers still
+    #   get a hard deny (unchanged behavior). Guardian callers get -D only if the
+    #   branch is fully merged into HEAD — verified with git branch --merged, which
+    #   is the same check git branch -d uses internally. If unmerged, the deny
+    #   message names the specific branch so the user can inspect before deciding.
+    #   Branch name extraction handles: git branch -D name, git -C dir branch -D name,
+    #   git branch --delete --force name, git branch --force --delete name.
+    _GUARDIAN_ACTIVE=0
+    for _gm in "${TRACE_STORE}/.active-guardian-"*; do
+        [[ -f "$_gm" ]] && _GUARDIAN_ACTIVE=$(( _GUARDIAN_ACTIVE + 1 ))
+    done
+    if [[ "$_GUARDIAN_ACTIVE" -eq 0 ]]; then
+        deny "git branch -D / --delete --force force-deletes a branch even if unmerged. Use git branch -d (lowercase) for safe deletion."
+    fi
+    # Guardian is active — extract branch name and verify it is merged into HEAD.
+    # Extraction: strip git flags/options to find the branch name argument.
+    # Handles: git branch -D <name>, git -C <dir> branch -D <name>,
+    #          git branch --delete --force <name>, git branch --force --delete <name>
+    _BRANCH_NAME=$(echo "$COMMAND" | \
+        sed 's/git[[:space:]]\{1,\}-C[[:space:]]\{1,\}[^[:space:]]\{1,\}[[:space:]]\{1,\}/git /' | \
+        grep -oE 'branch .+' | \
+        sed 's/^branch[[:space:]]*//' | \
+        sed 's/--delete//g; s/--force//g; s/-D[[:space:]]//g; s/^-D$//g; s/-f[[:space:]]//g' | \
+        tr -s ' ' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | \
+        awk '{print $1}')
+    if [[ -z "$_BRANCH_NAME" ]]; then
+        deny "Cannot parse branch name from: $COMMAND — refusing -D as a precaution."
+    fi
+    # Resolve repo dir for the merge check (respect git -C if present)
+    _MERGE_CHECK_DIR=$(extract_git_target_dir "$COMMAND")
+    if [[ -z "$_MERGE_CHECK_DIR" ]]; then
+        _MERGE_CHECK_DIR="."
+    fi
+    # Check if the branch is fully merged into HEAD
+    if ! git -C "$_MERGE_CHECK_DIR" branch --merged HEAD 2>/dev/null | grep -qE "(^|[[:space:]])${_BRANCH_NAME}$"; then
+        deny "Branch '${_BRANCH_NAME}' has unmerged commits — cannot force-delete even for Guardian. Merge or cherry-pick first, or delete manually after inspecting."
+    fi
+    # Branch is merged — allow Guardian to proceed
 fi
 
 # --- Check 4b: Branch deletion requires Guardian context ---
-# git branch -D is hard-denied by Check 4. This gates git branch -d (safe delete)
-# to require an active Guardian agent. Prevents orchestrator from bulk-deleting
-# branches without Guardian oversight.
+# git branch -D is handled by Check 4 (Guardian + merge-verified path above).
+# This gates git branch -d (lowercase, safe delete) to require an active Guardian
+# agent. Prevents orchestrator from bulk-deleting branches without Guardian oversight.
 if echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bbranch\s+.*-d\b'; then
-    # Skip if already caught by Check 4 (-D / --delete --force patterns)
-    if ! echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bbranch\s+(-D\b|.*--delete\s+--force|.*--force\s+--delete)'; then
+    # Skip if already handled by Check 4 (-D / --delete --force patterns)
+    if ! echo "$COMMAND" | grep -qE 'git\s+[^|;&]*\bbranch\s+(-D\b|.*\s-D\b|.*--delete\s+--force|.*--force\s+--delete)'; then
         GUARDIAN_ACTIVE=0
         for _gm in "${TRACE_STORE}/.active-guardian-"*; do
             [[ -f "$_gm" ]] && GUARDIAN_ACTIVE=$(( GUARDIAN_ACTIVE + 1 ))
