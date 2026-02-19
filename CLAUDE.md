@@ -134,7 +134,6 @@ When code and plan diverge: **HOW** divergence (algorithm, library) → code win
 **Commands** (lightweight, no context fork):
 - `/compact` — Context preservation before compaction
 - `/backlog` — Unified backlog: list, create, close, triage todos (GitHub Issues). No args = list; `/backlog <text>` = create; `/backlog done <#>` = close
-- `/approve` — Quick-approve verification gate
 
 **Skills — Governance:**
 - `observatory` — Self-improving flywheel: analyze traces, surface signals, suggest improvements
