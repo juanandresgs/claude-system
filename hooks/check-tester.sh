@@ -90,6 +90,66 @@ fi
 # `.response` kept as fallback for backward compatibility.
 RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.last_assistant_message // .response // empty' 2>/dev/null || echo "")
 
+# Diagnostic logging for auto-verify pipeline (DEC-V3-001, Issue #129)
+# Emits to stderr so it appears in Claude Code's hook diagnostic output.
+# This captures actual runtime payload structure to diagnose why AUTOVERIFY
+# signal is not found. Runs unconditionally so every tester stop is logged.
+RESPONSE_LEN=${#RESPONSE_TEXT}
+echo "check-tester: RESPONSE_TEXT length=$RESPONSE_LEN" >&2
+if [[ "$RESPONSE_LEN" -gt 0 ]]; then
+    AV_SIGNAL=$(echo "$RESPONSE_TEXT" | grep -c 'AUTOVERIFY: CLEAN' 2>/dev/null || echo "0")
+    echo "check-tester: AUTOVERIFY signal count=$AV_SIGNAL" >&2
+    if [[ "$AV_SIGNAL" -gt 0 ]]; then
+        CONF_CHECK=$(echo "$RESPONSE_TEXT" | grep -ci '\*\*High\*\*' 2>/dev/null || echo "0")
+        PARTIAL_CHECK=$(echo "$RESPONSE_TEXT" | grep -ci 'Partially verified' 2>/dev/null || echo "0")
+        NOT_TESTED_CHECK=$(echo "$RESPONSE_TEXT" | grep -ci 'Not tested' 2>/dev/null || echo "0")
+        echo "check-tester: secondary validation: High=$CONF_CHECK Partial=$PARTIAL_CHECK NotTested=$NOT_TESTED_CHECK" >&2
+    fi
+else
+    echo "check-tester: WARNING — RESPONSE_TEXT is empty. Payload keys: $(echo "$AGENT_RESPONSE" | jq -r 'keys[]' 2>/dev/null | tr '\n' ',' || echo 'none')" >&2
+fi
+
+# W6-2: Summary.md fallback for AUTOVERIFY signal (DEC-V3-001, Issue #129)
+#
+# @decision DEC-V3-001
+# @title Diagnostic-first approach for auto-verify repair
+# @status accepted
+# @rationale Auto-verify never fires in production. Tester agents follow the
+#   Trace Protocol: write verbose output to TRACE_DIR/summary.md (file), keep
+#   return message under 1500 tokens. The AUTOVERIFY: CLEAN signal is written
+#   to summary.md as part of the tester's trace artifact — but last_assistant_message
+#   may be empty or a brief token-limited message that omits the signal. Fix:
+#   when last_assistant_message is empty OR lacks AUTOVERIFY signal, supplement
+#   with the active trace's summary.md content. This is safe: summary.md is written
+#   by the tester before returning (Trace Protocol). The fallback does NOT replace
+#   last_assistant_message for secondary validation — it merges the two sources
+#   into RESPONSE_TEXT so Phase 1 auto-verify has complete signal coverage.
+#   Issue #129.
+if [[ -z "$RESPONSE_TEXT" ]] || ! echo "$RESPONSE_TEXT" | grep -q 'AUTOVERIFY: CLEAN'; then
+    # Attempt to find the active trace's summary.md
+    _AV_TRACE_ID=$(detect_active_trace "$PROJECT_ROOT" "tester" 2>/dev/null || echo "")
+    if [[ -n "$_AV_TRACE_ID" ]]; then
+        _AV_SUMMARY="${TRACE_STORE}/${_AV_TRACE_ID}/summary.md"
+        if [[ -s "$_AV_SUMMARY" ]]; then
+            _SUMMARY_TEXT=$(cat "$_AV_SUMMARY" 2>/dev/null || echo "")
+            if [[ -n "$_SUMMARY_TEXT" ]]; then
+                echo "check-tester: supplementing RESPONSE_TEXT from summary.md (trace=${_AV_TRACE_ID})" >&2
+                # Append summary.md content to RESPONSE_TEXT so auto-verify can find the signal
+                RESPONSE_TEXT="${RESPONSE_TEXT}
+${_SUMMARY_TEXT}"
+                RESPONSE_LEN=${#RESPONSE_TEXT}
+                echo "check-tester: RESPONSE_TEXT length after supplement=$RESPONSE_LEN" >&2
+                AV_SIGNAL_AFTER=$(echo "$RESPONSE_TEXT" | grep -c 'AUTOVERIFY: CLEAN' 2>/dev/null || echo "0")
+                echo "check-tester: AUTOVERIFY signal count after supplement=$AV_SIGNAL_AFTER" >&2
+            fi
+        else
+            echo "check-tester: summary.md not found or empty at ${_AV_SUMMARY}" >&2
+        fi
+    else
+        echo "check-tester: no active tester trace found for summary.md fallback" >&2
+    fi
+fi
+
 # --- Dedup guard: skip auto-verify if already verified (Fix #124) ---
 # SubagentStop can fire twice for a single tester run (tester stops, is resumed,
 # stops again). Each stop event runs check-tester.sh independently. If the first
