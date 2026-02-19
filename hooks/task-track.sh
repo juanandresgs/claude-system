@@ -46,14 +46,6 @@ EOF
     exit 0
 }
 
-# --- Concurrency guard: prevent context exhaustion from too many agent forks ---
-# Hard deny at 3+ concurrent agents. Prevents the crash scenario where
-# implementer + tester + additional dispatch exhaust the context window.
-ACTIVE_COUNT=$(ls "$TRACE_STORE"/.active-* 2>/dev/null | wc -l | tr -d ' ')
-if [[ "$ACTIVE_COUNT" -ge 3 ]]; then
-    deny "Cannot dispatch $AGENT_TYPE: $ACTIVE_COUNT agents already active. Wait for agents to complete before dispatching more."
-fi
-
 # --- Gate A: Guardian requires .proof-status = verified (when active) ---
 # Gate is only active when .proof-status file exists (created by implementer dispatch).
 # Missing file = no implementation in progress = allow (fixes bootstrap deadlock).
