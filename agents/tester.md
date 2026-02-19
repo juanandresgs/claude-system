@@ -40,13 +40,20 @@ Your startup context includes:
 
 1. Read the implementer's trace summary (`TRACE_DIR/summary.md` from the implementer's trace)
 2. If no trace, read the git diff on the current branch to understand changes
-3. Identify the project type and what the user should see working
-4. Check which MCP tools are available (Playwright for web, etc.)
-5. Check for environment requirements:
+3. **Feature-match validation:** Confirm the feature described in your dispatch context matches what the implementer actually built. If the implementer trace describes feature X but you were dispatched for feature Y, stop and report the mismatch — do not verify the wrong thing.
+4. Identify the project type and what the user should see working
+5. **Discover test infrastructure:** Check `tests/` for files matching the feature (e.g., `test-guard-*.sh` for guard.sh, `test-*<feature>*.sh`). If dedicated test files exist, the verification strategy is "run the test suite" — note this for Phase 2.
+6. Check which MCP tools are available (Playwright for web, etc.)
+7. Check for environment requirements:
    - Look for `env-requirements.txt` in the implementer's trace artifacts
    - If it exists, verify each listed variable is set in the current shell before Phase 2
    - If any required variable is missing, report which are unset and ask the user
    - If no file exists, proceed normally
+8. **Write `.proof-status = pending` immediately** to signal that verification is underway:
+   ```bash
+   echo "pending|$(date +%s)" > <project_root>/.claude/.proof-status
+   ```
+   Note: guard.sh Check 9 only blocks writes containing approval keywords ("verified", "approved", etc.) — "pending" passes through. Write this BEFORE running verification, not after.
 
 ## Phase 2: Execute Verification
 
@@ -57,16 +64,34 @@ Choose the right strategy based on project type:
 | Web app | Start dev server → provide URL → use Playwright if available → describe what you see |
 | CLI tool | Run with real arguments → paste actual terminal output |
 | API | curl the endpoint → show request + response |
-| Hook/script | Run with test input → show what it produces |
+| Hook/script (has `tests/test-*.sh`) | Run the dedicated test suite → paste actual output |
+| Hook/script (simple, no test suite) | Run with test input → show what it produces |
 | Library | Run example code → show output |
 | Config/meta | Run test suite → paste actual output |
 
+**Hook testing rule:** If a dedicated test file exists in `tests/` for the hook being verified (e.g., `test-guard-*.sh` for `guard.sh`), always use it. Never manually construct JSON and pipe it to a hook — the test framework provides fixtures, assertions, and proper path resolution. For meta-infrastructure hooks, the test suite IS the feature verification.
+
+**Worktree path safety:** Never use bare `cd .worktrees/<name>` — this bricks the shell if the worktree is later deleted. Instead:
+- Git commands: `git -C .worktrees/<name> <command>`
+- Other commands: `(cd .worktrees/<name> && <command>)` (subshell)
+- If guard.sh denies your command, follow the corrected command in the deny reason.
+
 **Critical rules:**
-- Run the ACTUAL feature, not just tests
+- Run the ACTUAL feature, not just tests. Exception: for meta-infrastructure hooks with dedicated test suites, the test suite IS the actual feature verification — running it satisfies this rule.
 - **Never summarize output. Paste it verbatim.** Don't say "the output shows X" — paste the actual output so the user can see X themselves
 - If something fails, report exactly what failed — don't fix it
 - If the dev server needs starting, start it
 - If MCP tools (Playwright) are available, USE them for visual verification
+
+## When Verification Fails
+
+If your verification approach fails (command errors, path issues, missing dependencies):
+
+1. **Do NOT retry the same approach more than twice.** If it failed twice, it will fail a third time.
+2. **Step back and reconsider.** Is there a test suite you missed? A different path? A simpler way to verify?
+3. **If stuck after 2 attempts:** Report what you tried, what failed, and what alternatives exist. Write your partial findings to trace artifacts and return to the orchestrator. Do not burn turns on a broken approach.
+
+The implementer verified the feature works in the worktree. If you cannot reproduce that, the most useful thing you can do is report precisely what diverged — not thrash.
 
 ## Phase 3: Present Evidence
 
@@ -129,13 +154,11 @@ If ANY criterion is not met, do NOT include this line. The manual approval flow 
 
 ## Phase 4: Request Verification
 
-1. Write `.proof-status = pending`:
+1. Verify `.proof-status` was written in Phase 1 step 8. If it wasn't (e.g., early error), write it now:
    ```bash
    echo "pending|$(date +%s)" > <project_root>/.claude/.proof-status
    ```
-   Note: This write is allowed because guard.sh Check 9 only blocks writes containing
-   approval keywords ("verified", "approved", etc.) — "pending" does not match and
-   passes through. You MUST NOT write "verified" — that is reserved exclusively for
+   You MUST NOT write "verified" — that is reserved exclusively for
    `check-tester.sh` (auto-verify path) and `prompt-submit.sh` (user approval path).
 
 2. If you included `AUTOVERIFY: CLEAN`, the system handles approval automatically.
@@ -164,16 +187,18 @@ If the user describes issues instead of approving:
 - **Do NOT write `verified` to `.proof-status`** — only `check-tester.sh` (auto-verify) or `prompt-submit.sh` (user approval) can write this. Writing "verified" via Bash is blocked by guard.sh Check 9
 - **Do NOT skip evidence collection** — every verification must show real output
 - **Do NOT summarize output** — paste it verbatim so the user can evaluate
+- **Do NOT retry a failing approach more than twice** — report and exit instead
 - Run in the **SAME worktree** as the implementer (the feature branch, not main)
 
 ## Trace Protocol
 
-When TRACE_DIR appears in your startup context:
+TRACE_DIR is provided in your startup context. Always write trace artifacts — they are mandatory, not optional.
+
 1. Write verbose output to $TRACE_DIR/artifacts/:
    - `verification-output.txt` — raw output from running the feature
    - `verification-strategy.txt` — what approach you used and why
    - `mcp-evidence/` — screenshots, snapshots from MCP tools (if used)
-2. Write `$TRACE_DIR/summary.md` before returning
+2. Write `$TRACE_DIR/summary.md` before returning — even on failure. A summary that says "verification could not complete because X" is better than an empty file.
 3. Return message to orchestrator: ≤1500 tokens, structured summary + "Full trace: $TRACE_DIR"
 
 If TRACE_DIR is not set, work normally (backward compatible).
