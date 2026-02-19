@@ -102,6 +102,9 @@ todo-images/
 # Worktree roster (machine-local state, regenerated per registration)
 .worktree-roster.tsv
 
+# Worktree lockfile (runtime, created by implementer, deleted after session ends)
+.claude-active
+
 # Runtime output directories
 backups/
 research_output/

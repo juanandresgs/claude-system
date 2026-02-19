@@ -49,12 +49,26 @@ SHA=$(git rev-parse "refs/checkpoints/${BRANCH}/<N>")
 # Show what will change before restoring
 git diff HEAD "$SHA" --stat
 
-# Restore working tree to checkpoint state (does NOT move HEAD)
-git checkout "$SHA" -- .
+# Show untracked files that will be REMOVED by the restore
+echo ""
+echo "--- Untracked files that will be removed ---"
+git clean -fdn
 ```
 
-Show the diff stat to the user before restoring, and ask for confirmation:
-> This will restore N files to checkpoint state. HEAD stays at its current commit. Proceed?
+**Warning:** Rewind removes untracked files that did not exist at the checkpoint.
+Show both the diff stat and the untracked file list to the user, then ask for confirmation:
+> This will restore N files to checkpoint state and remove M untracked files. HEAD stays at its current commit. Proceed?
+
+After user confirmation, restore with both `git checkout` (tracked files) and `git clean` (untracked files):
+
+```bash
+# Restore tracked files to checkpoint state (does NOT move HEAD)
+git checkout "$SHA" -- .
+
+# Remove untracked files created after the checkpoint,
+# but preserve .claude/ session state files
+git clean -fd -e .claude/
+```
 
 ### Step 4 — Log the rewind event
 
