@@ -356,26 +356,29 @@ All P0 requirements validated and tested:
 
 
 ## Phase 4: v2 Checkpoints & Rewind
-**Status:** in-progress
+**Status:** completed
 **Decision IDs:** DEC-V2-002
 **Requirements:** REQ-P0-004, REQ-P0-005
-**Issues:** #82
+**Issues:** #82, #118, #119, #120
 **Definition of Done:**
 - REQ-P0-004 satisfied: Checkpoint refs created at correct frequency
 - REQ-P0-005 satisfied: `/rewind` restores working tree to checkpoint state
 
 ### Implementation Status
-- `hooks/checkpoint.sh` exists and is registered in settings.json
-- `skills/rewind/` skill exists with SKILL.md
-- Checkpoint refs created on Write/Edit tool calls
+- `hooks/checkpoint.sh` registered in settings.json — creates refs on Write/Edit tool calls
+- `skills/rewind/SKILL.md` — full restore protocol with `git checkout` + `git clean -fd -e .claude/`
+- 8-test round-trip suite validates checkpoint creation, sequential numbering, restore accuracy, untracked file cleanup, .claude/ exclusion, counter reset, and worktree context
 
-### Remaining Work
-- Validate checkpoint creation frequency and ref naming
-- Verify `/rewind` restore accuracy
-- Add tests for checkpoint lifecycle
+### P0 Requirement Coverage
+- REQ-P0-004 (checkpoint refs): Addressed by DEC-V2-002 — checkpoint.sh creates `refs/checkpoints/<branch>/N` every 5 writes and on first modification of new files. Validated by tests 1-4, 7-8.
+- REQ-P0-005 (rewind restore): Addressed by DEC-V2-002 — SKILL.md Step 3 restores tracked files via `git checkout SHA -- .` and removes untracked files via `git clean -fd -e .claude/`. Validated by tests 1, 5-6.
+
+### Deferred (P1)
+- W4-5: Checkpoint frequency auto-tuning (REQ-P1-002)
+- W4-6: Cross-session friction pattern detection (REQ-P1-003)
 
 ### Decision Log
-<!-- Guardian appends here after phase completion -->
+- DEC-V2-002: Git ref-based checkpoints via plumbing commands — Implemented in checkpoint.sh (creation) and SKILL.md (restore). Critical bug fix: original SKILL.md lacked `git clean -fd -e .claude/` after restore, leaving untracked files from after the checkpoint. Fixed in W4-1 (#118). Round-trip test suite (W4-3 #119, W4-4 #120) validates full lifecycle including worktree context.
 
 
 ## Phase 5: v2 Session-Aware Hooks + Commit Context
