@@ -330,30 +330,29 @@ flywheel produces actionable suggestions. Each phase independently valuable and 
 
 
 ## Phase 3: v2 Session Event Log (Foundation)
-**Status:** in-progress
-**Decision IDs:** DEC-V2-001, DEC-V2-003, DEC-V2-004
+**Status:** completed
+**Decision IDs:** DEC-V2-001, DEC-V2-003, DEC-V2-004, DEC-V2-SCHEMA-001
 **Requirements:** REQ-P0-001, REQ-P0-002, REQ-P0-003
-**Issues:** #81
+**Issues:** #81, #116, #117
 **Definition of Done:**
 - REQ-P0-001 satisfied: `.session-events.jsonl` written with structured events
 - REQ-P0-002 satisfied: `get_session_trajectory()` returns accurate aggregates
 - REQ-P0-003 satisfied: Events archived to `~/.claude/sessions/<project>/` on session end
 
 ### Implementation Status
-The following are already implemented in the codebase:
-- `append_session_event()` in context-lib.sh (functional)
-- `get_session_trajectory()` in context-lib.sh (functional)
-- Session archive in session-end.sh (functional, writes index.jsonl)
+All P0 requirements validated and tested:
+- `append_session_event()` in context-lib.sh (functional, schema-validated)
+- `get_session_trajectory()` in context-lib.sh (functional, accuracy-validated)
+- Session archive in session-end.sh (functional, writes index.jsonl, schema-validated)
 - `get_prior_sessions()` in context-lib.sh (functional)
-
-### Remaining Work
-- Validate event schema matches the planned schema (below)
-- Verify `get_session_trajectory()` accuracy against known event logs
-- Add unit tests for session event functions
-- Ensure all planned event sources are wired (track.sh, guard.sh, checkpoint.sh)
+- Guardian commit event emission via SHA comparison (W3-1)
+- 11-test schema compliance suite (W3-5, W3-6)
 
 ### Decision Log
-<!-- Guardian appends here after phase completion -->
+- DEC-V2-001: Session events as JSONL append-only log — Implemented in context-lib.sh `append_session_event()`. All event types conform to schema.
+- DEC-V2-003: Session archive indexed by project hash — Implemented in session-end.sh. Archive index entries validated by test suite (W3-6).
+- DEC-V2-004: Trajectory data as shell variables, not JSON — Implemented in `get_session_trajectory()`. Accuracy validated against synthetic event logs.
+- DEC-V2-SCHEMA-001: Schema compliance tests validate event structure at unit level — 11 tests in test-event-schema.sh cover all event types, graceful degradation, and aggregate accuracy.
 
 
 ## Phase 4: v2 Checkpoints & Rewind
