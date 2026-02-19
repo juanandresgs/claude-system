@@ -382,13 +382,25 @@ All P0 requirements validated and tested:
 
 
 ## Phase 5: v2 Session-Aware Hooks + Commit Context
-**Status:** planned
+**Status:** completed
 **Decision IDs:** DEC-V2-005
 **Requirements:** REQ-P0-006, REQ-P0-007
-**Issues:** #83, #84
+**Issues:** #83, #84, #121, #122
 **Definition of Done:**
 - REQ-P0-006 satisfied: Non-trivial commits include `--- Session Context ---` block
 - REQ-P0-007 satisfied: test-gate provides trajectory-based guidance on strike 2+
+
+### Implementation Status
+All P0 requirements validated and tested:
+- `get_session_summary_context()` in context-lib.sh generates structured commit context blocks for non-trivial sessions (>5 tool calls)
+- `detect_approach_pivots()` in context-lib.sh identifies edit-fail loops as approach pivots
+- `subagent-start.sh` injects session summary when spawning Guardian agents
+- `test-gate.sh` provides trajectory-aware guidance on strike 2+ (file-specific, assertion-specific)
+- 76 tests across 3 test files validate the complete session-aware hook lifecycle
+
+### P0 Requirement Coverage
+- REQ-P0-006 (session context in commits): Addressed by DEC-V2-005 — guardian.md protocol + subagent-start.sh injection + get_session_summary_context(). Validated by test-session-context.sh (10 tests including Guardian injection path).
+- REQ-P0-007 (trajectory-based test guidance): Addressed by DEC-V2-005 — test-gate.sh uses get_session_trajectory() to provide file-specific and assertion-specific guidance. Validated by test-trajectory.sh (17 tests including 52-event scale test).
 
 ### File Changes
 
@@ -398,9 +410,12 @@ All P0 requirements validated and tested:
 | `hooks/subagent-start.sh` | Inject session summary when spawning Guardian (~15 lines) |
 | `hooks/context-lib.sh` | Add `get_session_summary_context()`, `detect_approach_pivots()` |
 | `hooks/test-gate.sh` | Trajectory-aware guidance on strike 2+ (~30 lines replacement) |
+| `tests/test-session-context.sh` | +2 tests: Guardian injection path, trajectory accuracy |
+| `tests/test-trajectory.sh` | +1 scale test with 3 assertions (52 events, pivot detection) |
+| `tests/test-v2-e2e.sh` | +14 lifecycle assertions (9-stage full session arc) |
 
 ### Decision Log
-<!-- Guardian appends here after phase completion -->
+- DEC-V2-005: Session context in commits as structured text block — Implemented in guardian.md (protocol), subagent-start.sh (injection), context-lib.sh (generation). Non-trivial sessions (>5 tool calls) produce a `--- Session Context ---` block with Intent, Approach, Friction, Rejected, Open, and Stats fields. Trivial sessions omit the block. Validated by 10 unit tests + 17 trajectory tests + 49 e2e lifecycle tests.
 
 
 ## Event Log Schema
