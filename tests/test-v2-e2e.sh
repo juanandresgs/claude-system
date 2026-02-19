@@ -2,6 +2,9 @@
 # E2E Intent Validation — exercises all 5 v2 intents in isolation.
 # Each intent gets its own temp directory. Target: <30s total.
 #
+# Also includes W5-5: complete session lifecycle integration test (9 assertions)
+# that simulates all lifecycle stages end-to-end in a single temp dir.
+#
 # @decision DEC-V2-E2E-001
 # @title E2E intent validation for v2 governance system
 # @status accepted
@@ -9,6 +12,9 @@
 # cross-session learning) that each span multiple functions and hooks. Unit tests
 # validate individual functions; this E2E suite validates the intents end-to-end
 # using real temp directories and real git repos. One run covers all 5 intents.
+# W5-5 adds a complete session lifecycle test: session_start → writes → test_fail
+# → pivot_detection → checkpoint → test_pass → summary → archive → cross-session.
+# All 9 lifecycle stages are exercised in a single test function with a single temp dir.
 # Target runtime: <30s. Each intent is isolated (separate temp dir) so failures
 # don't cascade.
 
@@ -320,6 +326,129 @@ SPARSE_RESULT=$(get_prior_sessions "$SPARSE_DIR")
 safe_cleanup "$I05_DIR" "$SCRIPT_DIR"
 safe_cleanup "$SPARSE_DIR" "$SCRIPT_DIR"
 rm -rf "$SESSION_DIR" "$SPARSE_SESSION_DIR"
+echo ""
+
+# ============================================================================
+# W5-5: Complete session lifecycle integration test (9 assertions)
+# ============================================================================
+# Exercises every stage of the v2 session lifecycle in a single temp dir:
+#   1. session_start logged
+#   2. write events logged
+#   3. test_run fail logged
+#   4. detect_approach_pivots detects the edit-fail loop
+#   5. checkpoint event logged
+#   6. test_run pass logged
+#   7. get_session_summary_context produces non-empty output with Stats
+#   8. session archived (event file copied to archive dir, original removed)
+#   9. get_prior_sessions returns context after 3 archived sessions
+
+echo "=== W5-5: Complete Session Lifecycle Integration ==="
+LC_DIR=$(mktemp -d)
+mkdir -p "$LC_DIR/.claude" "$LC_DIR/.git"
+
+# --- Stage 1: session_start ---
+append_session_event "session_start" '{"project":"lifecycle-test","branch":"main"}' "$LC_DIR"
+LC_EVENTS="$LC_DIR/.claude/.session-events.jsonl"
+LC_COUNT=$(wc -l < "$LC_EVENTS" | tr -d ' ')
+[[ "$LC_COUNT" -ge 1 ]] && pass "stage 1: session_start event logged" || fail "stage 1: session_start not logged"
+
+# --- Stage 2: write events ---
+append_session_event "write" '{"file":"src/auth.py"}' "$LC_DIR"
+append_session_event "write" '{"file":"src/auth.py"}' "$LC_DIR"
+append_session_event "write" '{"file":"src/utils.py"}' "$LC_DIR"
+LC_COUNT=$(wc -l < "$LC_EVENTS" | tr -d ' ')
+[[ "$LC_COUNT" -eq 4 ]] && pass "stage 2: 3 write events appended (total=4)" \
+    || fail "stage 2: expected 4 events, got $LC_COUNT"
+
+# --- Stage 3: test_run fail ---
+append_session_event "test_run" '{"result":"fail","failures":2,"assertion":"test_auth_validate"}' "$LC_DIR"
+append_session_event "write"    '{"file":"src/auth.py"}' "$LC_DIR"
+append_session_event "test_run" '{"result":"fail","failures":2,"assertion":"test_auth_validate"}' "$LC_DIR"
+LC_COUNT=$(wc -l < "$LC_EVENTS" | tr -d ' ')
+[[ "$LC_COUNT" -eq 7 ]] && pass "stage 3: test_run fail events logged (total=7)" \
+    || fail "stage 3: expected 7 events, got $LC_COUNT"
+
+# --- Stage 4: detect_approach_pivots detects the loop ---
+set +e
+detect_approach_pivots "$LC_DIR"
+set -e
+if [[ "$PIVOT_COUNT" -ge 1 ]]; then
+    pass "stage 4: detect_approach_pivots detects edit-fail loop (PIVOT_COUNT=$PIVOT_COUNT)"
+else
+    fail "stage 4: detect_approach_pivots did not detect loop"
+fi
+if echo "$PIVOT_FILES" | grep -q "src/auth.py"; then
+    pass "stage 4: auth.py identified as pivot file"
+else
+    fail "stage 4: auth.py not in pivot files: $PIVOT_FILES"
+fi
+
+# --- Stage 5: checkpoint event ---
+append_session_event "checkpoint" '{"ref":"refs/checkpoints/auto-001"}' "$LC_DIR"
+LC_CHECKPOINTS=$(grep -c '"event":"checkpoint"' "$LC_EVENTS" 2>/dev/null || true)
+[[ "$LC_CHECKPOINTS" -eq 1 ]] && pass "stage 5: checkpoint event logged" \
+    || fail "stage 5: expected 1 checkpoint, found $LC_CHECKPOINTS"
+
+# --- Stage 6: test_run pass ---
+append_session_event "test_run" '{"result":"pass","failures":0,"assertion":"test_auth_validate"}' "$LC_DIR"
+LC_PASSES=$(grep '"event":"test_run"' "$LC_EVENTS" 2>/dev/null | grep '"result":"pass"' | wc -l | tr -d ' ')
+[[ "$LC_PASSES" -ge 1 ]] && pass "stage 6: test_run pass event logged" \
+    || fail "stage 6: no pass events found"
+
+# --- Stage 7: get_session_summary_context is non-empty and has Stats ---
+LC_SUMMARY=$(get_session_summary_context "$LC_DIR")
+if [[ -n "$LC_SUMMARY" ]]; then
+    pass "stage 7: session summary non-empty"
+else
+    fail "stage 7: session summary empty"
+fi
+if echo "$LC_SUMMARY" | grep -q '^Stats:'; then
+    pass "stage 7: session summary has Stats line"
+else
+    fail "stage 7: session summary missing Stats line"
+fi
+
+# --- Stage 8: session archive simulation ---
+# Simulate what session-end.sh does: copy event file to archive dir, remove original.
+LC_PROJECT_HASH=$(echo "$LC_DIR" | shasum -a 256 2>/dev/null | cut -c1-12)
+LC_ARCHIVE_DIR="$HOME/.claude/sessions/${LC_PROJECT_HASH}"
+mkdir -p "$LC_ARCHIVE_DIR"
+LC_SESSION_ID="lifecycle-session-$(date +%s)"
+cp "$LC_EVENTS" "${LC_ARCHIVE_DIR}/${LC_SESSION_ID}.jsonl"
+# Write index entry so get_prior_sessions can read it
+LC_TOTAL_EVENTS=$(wc -l < "$LC_EVENTS" | tr -d ' ')
+echo "{\"id\":\"$LC_SESSION_ID\",\"started\":\"2026-02-19T10:00:00Z\",\"duration_min\":5,\"outcome\":\"tests-passing\",\"files_touched\":[\"src/auth.py\",\"src/utils.py\"],\"friction\":[\"test_auth_validate\"]}" \
+    >> "${LC_ARCHIVE_DIR}/index.jsonl"
+rm -f "$LC_EVENTS"
+
+[[ -f "${LC_ARCHIVE_DIR}/${LC_SESSION_ID}.jsonl" ]] && pass "stage 8: session archived to index dir" \
+    || fail "stage 8: archive file missing"
+[[ ! -f "$LC_EVENTS" ]] && pass "stage 8: event file removed after archive" \
+    || fail "stage 8: event file still present after archive"
+LC_ARCHIVE_LINES=$(wc -l < "${LC_ARCHIVE_DIR}/${LC_SESSION_ID}.jsonl" | tr -d ' ')
+[[ "$LC_ARCHIVE_LINES" -eq "$LC_TOTAL_EVENTS" ]] && pass "stage 8: archive contains all $LC_TOTAL_EVENTS events" \
+    || fail "stage 8: archive has $LC_ARCHIVE_LINES events, expected $LC_TOTAL_EVENTS"
+
+# --- Stage 9: get_prior_sessions returns context after 3 sessions ---
+# Add 2 more index entries so we hit the >=3 threshold
+echo '{"id":"prev-1","started":"2026-02-17T10:00:00Z","duration_min":10,"outcome":"pass","files_touched":["src/auth.py"],"friction":["test_auth_validate"]}' \
+    >> "${LC_ARCHIVE_DIR}/index.jsonl"
+echo '{"id":"prev-2","started":"2026-02-18T10:00:00Z","duration_min":8,"outcome":"pass","files_touched":["src/utils.py"],"friction":[]}' \
+    >> "${LC_ARCHIVE_DIR}/index.jsonl"
+LC_PRIOR=$(get_prior_sessions "$LC_DIR")
+if [[ -n "$LC_PRIOR" ]]; then
+    pass "stage 9: get_prior_sessions returns context (3+ archived sessions)"
+else
+    fail "stage 9: get_prior_sessions returned empty with 3 sessions"
+fi
+if echo "$LC_PRIOR" | grep -q 'Prior sessions'; then
+    pass "stage 9: prior sessions output has 'Prior sessions' header"
+else
+    fail "stage 9: prior sessions missing header"
+fi
+
+safe_cleanup "$LC_DIR" "$SCRIPT_DIR"
+rm -rf "${LC_ARCHIVE_DIR}"
 echo ""
 
 # ============================================================================
