@@ -5,6 +5,12 @@
 # Also includes W5-5: complete session lifecycle integration test (9 assertions)
 # that simulates all lifecycle stages end-to-end in a single temp dir.
 #
+# W6-4 adds INTENT-06: a 10-stage lifecycle arc that extends W5-5 with explicit
+# agent_start and cross-session context stages:
+#   session_start → agent_start → writes → test_fail → pivot_detection →
+#   checkpoint → test_pass → session_summary → archive → cross_session_context
+# All 10 assertions run in a single temp dir and must complete in <10s.
+#
 # @decision DEC-V2-E2E-001
 # @title E2E intent validation for v2 governance system
 # @status accepted
@@ -15,8 +21,10 @@
 # W5-5 adds a complete session lifecycle test: session_start → writes → test_fail
 # → pivot_detection → checkpoint → test_pass → summary → archive → cross-session.
 # All 9 lifecycle stages are exercised in a single test function with a single temp dir.
-# Target runtime: <30s. Each intent is isolated (separate temp dir) so failures
-# don't cascade.
+# W6-4 extends this with INTENT-06: a 10-stage lifecycle that adds explicit
+# agent_start (stage 2) and cross-session context (stage 10) assertions, completing
+# the full arc from spawn to multi-session learning. Target runtime: <10s per intent.
+# Each intent is isolated (separate temp dir) so failures don't cascade.
 
 set -euo pipefail
 
@@ -449,6 +457,149 @@ fi
 
 safe_cleanup "$LC_DIR" "$SCRIPT_DIR"
 rm -rf "${LC_ARCHIVE_DIR}"
+echo ""
+
+# ============================================================================
+# INTENT-06 (W6-4): 10-stage lifecycle arc — session_start to cross-session
+# ============================================================================
+# Exercises the complete v2 session lifecycle in sequence:
+#   Stage 1:  session_start event logged
+#   Stage 2:  agent_start event logged (implementer spawn)
+#   Stage 3:  write events logged (3 writes to 2 unique files)
+#   Stage 4:  test_fail events logged (edit-fail loop)
+#   Stage 5:  detect_approach_pivots identifies the looping file
+#   Stage 6:  checkpoint event logged
+#   Stage 7:  test_pass event logged
+#   Stage 8:  session_summary non-empty with Stats line
+#   Stage 9:  session archived (event file → archive dir, original removed)
+#   Stage 10: cross-session context available after 3 archived sessions
+#
+# All 10 assertions run in <10s in a single temp dir.
+# ============================================================================
+
+echo "=== INTENT-06 (W6-4): 10-Stage Session Lifecycle Arc ==="
+INTENT06_START=$(date +%s 2>/dev/null || echo "0")
+I06_DIR=$(mktemp -d)
+mkdir -p "$I06_DIR/.claude" "$I06_DIR/.git"
+
+# --- Stage 1: session_start ---
+append_session_event "session_start" '{"project":"intent06","branch":"feature/lifecycle"}' "$I06_DIR"
+I06_EVENTS="$I06_DIR/.claude/.session-events.jsonl"
+I06_COUNT=$(wc -l < "$I06_EVENTS" | tr -d ' ')
+[[ "$I06_COUNT" -ge 1 ]] && pass "INTENT-06 stage 1: session_start event logged" \
+    || fail "INTENT-06 stage 1: session_start not logged"
+
+# --- Stage 2: agent_start (implementer spawn) ---
+append_session_event "agent_start" '{"type":"implementer"}' "$I06_DIR"
+I06_AGENT=$(grep '"event":"agent_start"' "$I06_EVENTS" 2>/dev/null | grep '"implementer"' | wc -l | tr -d ' ')
+[[ "$I06_AGENT" -ge 1 ]] && pass "INTENT-06 stage 2: agent_start(implementer) event logged" \
+    || fail "INTENT-06 stage 2: agent_start not logged"
+
+# --- Stage 3: write events ---
+append_session_event "write" '{"file":"src/compute.py"}' "$I06_DIR"
+append_session_event "write" '{"file":"src/compute.py"}' "$I06_DIR"
+append_session_event "write" '{"file":"tests/test_compute.py"}' "$I06_DIR"
+I06_COUNT=$(wc -l < "$I06_EVENTS" | tr -d ' ')
+[[ "$I06_COUNT" -eq 5 ]] && pass "INTENT-06 stage 3: 3 write events logged (total=5)" \
+    || fail "INTENT-06 stage 3: expected 5 events, got $I06_COUNT"
+
+# --- Stage 4: test_fail events ---
+append_session_event "test_run" '{"result":"fail","failures":1,"assertion":"test_compute_value"}' "$I06_DIR"
+append_session_event "write"    '{"file":"src/compute.py"}' "$I06_DIR"
+append_session_event "test_run" '{"result":"fail","failures":1,"assertion":"test_compute_value"}' "$I06_DIR"
+I06_FAILS=$(grep '"event":"test_run"' "$I06_EVENTS" 2>/dev/null | grep '"result":"fail"' | wc -l | tr -d ' ')
+[[ "$I06_FAILS" -ge 2 ]] && pass "INTENT-06 stage 4: test_fail events logged (count=$I06_FAILS)" \
+    || fail "INTENT-06 stage 4: expected >=2 fail events, got $I06_FAILS"
+
+# --- Stage 5: pivot detection ---
+set +e
+detect_approach_pivots "$I06_DIR"
+set -e
+if [[ "$PIVOT_COUNT" -ge 1 ]]; then
+    pass "INTENT-06 stage 5: pivot detected (PIVOT_COUNT=$PIVOT_COUNT)"
+else
+    fail "INTENT-06 stage 5: no pivot detected after edit-fail loop"
+fi
+if echo "$PIVOT_FILES" | grep -q "src/compute.py"; then
+    pass "INTENT-06 stage 5: compute.py identified as pivot file"
+else
+    fail "INTENT-06 stage 5: compute.py not in pivot files: $PIVOT_FILES"
+fi
+
+# --- Stage 6: checkpoint ---
+append_session_event "checkpoint" '{"ref":"refs/checkpoints/auto-001"}' "$I06_DIR"
+I06_CHECKPOINTS=$(grep -c '"event":"checkpoint"' "$I06_EVENTS" 2>/dev/null || echo "0")
+[[ "$I06_CHECKPOINTS" -eq 1 ]] && pass "INTENT-06 stage 6: checkpoint event logged" \
+    || fail "INTENT-06 stage 6: expected 1 checkpoint, found $I06_CHECKPOINTS"
+
+# --- Stage 7: test_pass ---
+append_session_event "test_run" '{"result":"pass","failures":0,"assertion":"test_compute_value"}' "$I06_DIR"
+I06_PASSES=$(grep '"event":"test_run"' "$I06_EVENTS" 2>/dev/null | grep '"result":"pass"' | wc -l | tr -d ' ')
+[[ "$I06_PASSES" -ge 1 ]] && pass "INTENT-06 stage 7: test_pass event logged" \
+    || fail "INTENT-06 stage 7: no pass events found"
+
+# --- Stage 8: session_summary ---
+I06_SUMMARY=$(get_session_summary_context "$I06_DIR")
+if [[ -n "$I06_SUMMARY" ]]; then
+    pass "INTENT-06 stage 8: session summary non-empty"
+else
+    fail "INTENT-06 stage 8: session summary empty"
+fi
+if echo "$I06_SUMMARY" | grep -q '^Stats:'; then
+    pass "INTENT-06 stage 8: session summary has Stats line"
+else
+    fail "INTENT-06 stage 8: session summary missing Stats line"
+fi
+
+# --- Stage 9: archive ---
+I06_PROJECT_HASH=$(echo "$I06_DIR" | shasum -a 256 2>/dev/null | cut -c1-12)
+I06_ARCHIVE_DIR="$HOME/.claude/sessions/${I06_PROJECT_HASH}"
+mkdir -p "$I06_ARCHIVE_DIR"
+I06_SESSION_ID="intent06-session-$(date +%s)"
+I06_TOTAL_EVENTS=$(wc -l < "$I06_EVENTS" | tr -d ' ')
+cp "$I06_EVENTS" "${I06_ARCHIVE_DIR}/${I06_SESSION_ID}.jsonl"
+echo "{\"id\":\"$I06_SESSION_ID\",\"started\":\"2026-02-20T10:00:00Z\",\"duration_min\":5,\"outcome\":\"pass\",\"files_touched\":[\"src/compute.py\",\"tests/test_compute.py\"],\"friction\":[\"test_compute_value\"]}" \
+    >> "${I06_ARCHIVE_DIR}/index.jsonl"
+rm -f "$I06_EVENTS"
+
+[[ -f "${I06_ARCHIVE_DIR}/${I06_SESSION_ID}.jsonl" ]] && pass "INTENT-06 stage 9: session archived" \
+    || fail "INTENT-06 stage 9: archive file missing"
+[[ ! -f "$I06_EVENTS" ]] && pass "INTENT-06 stage 9: event file removed after archive" \
+    || fail "INTENT-06 stage 9: event file still present after archive"
+I06_ARCHIVE_LINES=$(wc -l < "${I06_ARCHIVE_DIR}/${I06_SESSION_ID}.jsonl" | tr -d ' ')
+[[ "$I06_ARCHIVE_LINES" -eq "$I06_TOTAL_EVENTS" ]] && pass "INTENT-06 stage 9: archive has all $I06_TOTAL_EVENTS events" \
+    || fail "INTENT-06 stage 9: archive has $I06_ARCHIVE_LINES events, expected $I06_TOTAL_EVENTS"
+
+# --- Stage 10: cross-session context ---
+# Add 2 more index entries to reach the >=3 threshold for get_prior_sessions
+echo '{"id":"i06-prev-1","started":"2026-02-18T10:00:00Z","duration_min":8,"outcome":"pass","files_touched":["src/compute.py"],"friction":["test_compute_value"]}' \
+    >> "${I06_ARCHIVE_DIR}/index.jsonl"
+echo '{"id":"i06-prev-2","started":"2026-02-19T10:00:00Z","duration_min":6,"outcome":"pass","files_touched":["tests/test_compute.py"],"friction":[]}' \
+    >> "${I06_ARCHIVE_DIR}/index.jsonl"
+I06_PRIOR=$(get_prior_sessions "$I06_DIR")
+if [[ -n "$I06_PRIOR" ]]; then
+    pass "INTENT-06 stage 10: cross-session context available (3+ archived sessions)"
+else
+    fail "INTENT-06 stage 10: get_prior_sessions returned empty with 3 sessions"
+fi
+if echo "$I06_PRIOR" | grep -q 'Prior sessions'; then
+    pass "INTENT-06 stage 10: cross-session output has 'Prior sessions' header"
+else
+    fail "INTENT-06 stage 10: cross-session output missing 'Prior sessions' header"
+fi
+
+# Verify timing (must complete in <10s)
+INTENT06_END=$(date +%s 2>/dev/null || echo "0")
+if [[ "$INTENT06_START" -gt 0 && "$INTENT06_END" -gt 0 ]]; then
+    INTENT06_ELAPSED=$(( INTENT06_END - INTENT06_START ))
+    [[ "$INTENT06_ELAPSED" -lt 10 ]] && pass "INTENT-06 completed in ${INTENT06_ELAPSED}s (<10s)" \
+        || fail "INTENT-06 took ${INTENT06_ELAPSED}s (expected <10s)"
+else
+    pass "INTENT-06 timing not available on this OS (skipping timing assertion)"
+fi
+
+safe_cleanup "$I06_DIR" "$SCRIPT_DIR"
+rm -rf "${I06_ARCHIVE_DIR}"
 echo ""
 
 # ============================================================================
