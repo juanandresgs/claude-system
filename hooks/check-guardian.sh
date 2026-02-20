@@ -87,9 +87,32 @@ if [[ -n "$RESPONSE_TEXT" ]]; then
     IS_PHASE_COMPLETING=$(echo "$RESPONSE_TEXT" | grep -iE 'phase.*(complete|done|finished)|marking phase.*completed|status.*completed|phase completion' || echo "")
 fi
 
-# Content-based: if all plan phases are now completed, flag for archival
-if [[ "$PLAN_LIFECYCLE" == "completed" ]]; then
-    ISSUES+=("All plan phases completed ($PLAN_COMPLETED_PHASES/$PLAN_TOTAL_PHASES) — plan should be archived before new work begins.")
+# Content-based: detect dormant plan (all initiatives completed) or specific initiative completion.
+# Living-document format: PLAN_LIFECYCLE=dormant means all initiatives are completed.
+# Legacy format: PLAN_LIFECYCLE=dormant (was "completed") means all phases done.
+if [[ "$PLAN_LIFECYCLE" == "dormant" ]]; then
+    ISSUES+=("All initiatives are completed — plan is dormant. Start a new initiative before implementing, or compress a completed initiative with compress_initiative().")
+elif [[ "$PLAN_LIFECYCLE" == "completed" ]]; then
+    # Legacy format backward compat
+    ISSUES+=("All plan phases completed ($PLAN_COMPLETED_PHASES/$PLAN_TOTAL_PHASES) — plan should be archived or a new initiative started.")
+fi
+
+# Check for initiative completion: detect when response mentions completing a specific initiative.
+# Suggest compress_initiative() when appropriate.
+if [[ -n "$RESPONSE_TEXT" ]]; then
+    HAS_INITIATIVE_COMPLETE=$(echo "$RESPONSE_TEXT" | grep -iE 'initiative.*(complete|done|finished)|all phases.*initiative.*done|initiative.*all phases' || echo "")
+    if [[ -n "$HAS_INITIATIVE_COMPLETE" && -f "$PLAN" ]]; then
+        # Extract active initiative names for context
+        ACTIVE_NAMES=$(grep -E '^\#\#\#\s+Initiative:' "$PLAN" 2>/dev/null | \
+            while IFS= read -r hdr; do
+                name=$(echo "$hdr" | sed 's/^###\s*Initiative:\s*//')
+                # Check if this initiative has status: active in the next few lines
+                echo "$name"
+            done | head -3 | paste -sd', ' - || echo "")
+        if [[ -n "$ACTIVE_NAMES" ]]; then
+            ISSUES+=("Initiative completion detected. Run compress_initiative('<name>') to move it to Completed Initiatives in MASTER_PLAN.md.")
+        fi
+    fi
 fi
 
 # Check 1: MASTER_PLAN.md freshness — only for phase-completing merges

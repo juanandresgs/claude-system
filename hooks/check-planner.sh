@@ -68,47 +68,110 @@ write_statusline_cache "$PROJECT_ROOT"
 
 ISSUES=()
 CONTEXT=""
+INITIATIVE_COUNT=0
+PHASE_COUNT=0
 
 # Check 1: MASTER_PLAN.md exists
 if [[ ! -f "$PLAN" ]]; then
     ISSUES+=("MASTER_PLAN.md not found in project root")
 else
-    # Check 2: Has phase headers
-    PHASE_COUNT=$(grep -cE '^\#\#\s+Phase\s+[0-9]' "$PLAN" 2>/dev/null || echo "0")
-    if [[ "$PHASE_COUNT" -eq 0 ]]; then
-        ISSUES+=("MASTER_PLAN.md has no ## Phase headers")
-    fi
+    # Detect format: living-document (### Initiative: headers) vs legacy (## Phase N)
+    INITIATIVE_COUNT=$(grep -cE '^\#\#\#\s+Initiative:' "$PLAN" 2>/dev/null || echo "0")
+    PHASE_COUNT=$(grep -cE '^\#\#\s+Phase\s+[0-9]|^\#{4,5}\s+Phase\s+[0-9]' "$PLAN" 2>/dev/null || echo "0")
 
-    # Check 2b: Has Project Overview section
-    if ! grep -q '^## Project Overview' "$PLAN" 2>/dev/null; then
-        ISSUES+=("MASTER_PLAN.md lacks ## Project Overview section — new sessions won't have project context")
-    fi
+    if [[ "$INITIATIVE_COUNT" -gt 0 ]]; then
+        # --- Living-document format validation ---
 
-    # Check 3: Has intent/vision/purpose section
-    if ! grep -qiE '^\#\#\s*(intent|vision|purpose|problem|overview|goal)' "$PLAN" 2>/dev/null; then
-        # Also check for common first-section patterns
-        if ! grep -qiE '^\#\#\s*(what|why|background|summary)' "$PLAN" 2>/dev/null; then
-            ISSUES+=("MASTER_PLAN.md may lack an intent/vision section")
+        # Check 2: Has ## Identity section (replaces ## Project Overview)
+        if ! grep -q '^## Identity' "$PLAN" 2>/dev/null; then
+            ISSUES+=("MASTER_PLAN.md lacks ## Identity section — living-document format requires it for session context")
         fi
-    fi
 
-    # Check 4: Has git issues or tasks
-    if ! grep -qiE 'issue|task|TODO|work.?item' "$PLAN" 2>/dev/null; then
-        ISSUES+=("MASTER_PLAN.md may lack git issues or task breakdown")
-    fi
+        # Check 2b: Has ## Architecture section
+        if ! grep -q '^## Architecture' "$PLAN" 2>/dev/null; then
+            ISSUES+=("MASTER_PLAN.md lacks ## Architecture section — agents need architecture context at startup")
+        fi
 
-    # Check 6: Has structured requirements sections (Goals, Non-Goals, Requirements)
-    # Only flag for multi-phase plans — single-phase plans (Tier 1) are expected to be brief
-    if [[ "$PHASE_COUNT" -gt 1 ]]; then
-        HAS_REQS=true
-        if ! grep -qiE '^\#\#\s*(Goals|Goals\s*&\s*Non.Goals)' "$PLAN" 2>/dev/null; then
-            HAS_REQS=false
+        # Check 2c: Has ## Active Initiatives section
+        if ! grep -q '^## Active Initiatives' "$PLAN" 2>/dev/null; then
+            ISSUES+=("MASTER_PLAN.md lacks ## Active Initiatives section — required for initiative-level lifecycle")
         fi
-        if ! grep -qiE '^\#\#\s*Requirements|^\#\#\#\s*Must.Have' "$PLAN" 2>/dev/null; then
-            HAS_REQS=false
+
+        # Check 2d: Has ## Decision Log section
+        if ! grep -q '^## Decision Log' "$PLAN" 2>/dev/null; then
+            ISSUES+=("MASTER_PLAN.md lacks ## Decision Log section — required for institutional memory")
         fi
-        if [[ "$HAS_REQS" == "false" ]]; then
-            ISSUES+=("MASTER_PLAN.md may lack structured requirements (Goals, Non-Goals, Requirements with P0/P1/P2)")
+
+        # Check 3: Each initiative has a **Status:** field
+        INITIATIVES_WITHOUT_STATUS=0
+        while IFS= read -r line; do
+            if echo "$line" | grep -qE '^\#\#\#\s+Initiative:'; then
+                INITIATIVES_WITHOUT_STATUS=$((INITIATIVES_WITHOUT_STATUS + 1))
+            elif echo "$line" | grep -qE '^\*\*Status:\*\*'; then
+                INITIATIVES_WITHOUT_STATUS=$((INITIATIVES_WITHOUT_STATUS - 1))
+            fi
+        done < "$PLAN"
+        # Note: simple heuristic — counts net unmatched initiatives
+        if [[ "$INITIATIVES_WITHOUT_STATUS" -gt 0 ]]; then
+            ISSUES+=("$INITIATIVES_WITHOUT_STATUS initiative(s) may lack **Status:** field — required for lifecycle detection")
+        fi
+
+        # Check 4: Has git issues or tasks within active initiatives
+        if ! grep -qiE 'issue|task|TODO|work.?item' "$PLAN" 2>/dev/null; then
+            ISSUES+=("MASTER_PLAN.md may lack git issues or task breakdown")
+        fi
+
+        # Check 5: Has at least one active initiative with requirements
+        ACTIVE_COUNT=$(get_plan_status "$PROJECT_ROOT" 2>/dev/null; echo "${PLAN_ACTIVE_INITIATIVES:-0}")
+        # Re-run get_plan_status (already called above) — use the exported variable
+        if [[ "${PLAN_ACTIVE_INITIATIVES:-0}" -gt 0 ]]; then
+            # Validate that active initiative has Goals section
+            ACTIVE_SECTION=$(awk '/^## Active Initiatives/{f=1} f && /^## Completed Initiatives|^## Parked/{exit} f{print}' "$PLAN" 2>/dev/null || echo "")
+            if [[ -n "$ACTIVE_SECTION" ]]; then
+                if ! echo "$ACTIVE_SECTION" | grep -qiE '^\#\#\#\#\s*(Goals|Requirements|Must.Have)'; then
+                    ISSUES+=("Active initiative(s) may lack structured Goals/Requirements sections")
+                fi
+            fi
+        fi
+
+    else
+        # --- Legacy format validation (backward compat) ---
+
+        # Check 2: Has phase headers
+        if [[ "$PHASE_COUNT" -eq 0 ]]; then
+            ISSUES+=("MASTER_PLAN.md has no ## Phase headers or ### Initiative: headers — neither format detected")
+        fi
+
+        # Check 2b: Has Project Overview or Identity section
+        if ! grep -qE '^## (Project Overview|Identity)' "$PLAN" 2>/dev/null; then
+            ISSUES+=("MASTER_PLAN.md lacks ## Project Overview or ## Identity section — new sessions won't have project context")
+        fi
+
+        # Check 3: Has intent/vision/purpose section
+        if ! grep -qiE '^\#\#\s*(intent|vision|purpose|problem|overview|goal)' "$PLAN" 2>/dev/null; then
+            if ! grep -qiE '^\#\#\s*(what|why|background|summary|identity)' "$PLAN" 2>/dev/null; then
+                ISSUES+=("MASTER_PLAN.md may lack an intent/vision section")
+            fi
+        fi
+
+        # Check 4: Has git issues or tasks
+        if ! grep -qiE 'issue|task|TODO|work.?item' "$PLAN" 2>/dev/null; then
+            ISSUES+=("MASTER_PLAN.md may lack git issues or task breakdown")
+        fi
+
+        # Check 6: Has structured requirements sections (Goals, Non-Goals, Requirements)
+        # Only flag for multi-phase plans — single-phase plans (Tier 1) are expected to be brief
+        if [[ "$PHASE_COUNT" -gt 1 ]]; then
+            HAS_REQS=true
+            if ! grep -qiE '^\#\#\s*(Goals|Goals\s*&\s*Non.Goals)' "$PLAN" 2>/dev/null; then
+                HAS_REQS=false
+            fi
+            if ! grep -qiE '^\#\#\s*Requirements|^\#\#\#\s*Must.Have' "$PLAN" 2>/dev/null; then
+                HAS_REQS=false
+            fi
+            if [[ "$HAS_REQS" == "false" ]]; then
+                ISSUES+=("MASTER_PLAN.md may lack structured requirements (Goals, Non-Goals, Requirements with P0/P1/P2)")
+            fi
         fi
     fi
 fi
@@ -138,7 +201,11 @@ if [[ ${#ISSUES[@]} -gt 0 ]]; then
         CONTEXT+="\n- $issue"
     done
 else
-    CONTEXT="Planner validation: MASTER_PLAN.md looks good ($PHASE_COUNT phases defined)."
+    if [[ "$INITIATIVE_COUNT" -gt 0 ]]; then
+        CONTEXT="Planner validation: MASTER_PLAN.md looks good ($INITIATIVE_COUNT initiative(s), $PHASE_COUNT phases)."
+    else
+        CONTEXT="Planner validation: MASTER_PLAN.md looks good ($PHASE_COUNT phases defined)."
+    fi
 fi
 
 # Persist findings for next-prompt injection

@@ -35,8 +35,38 @@ if [[ -n "$GIT_BRANCH" ]]; then
 fi
 
 # --- MASTER_PLAN.md preamble: preserve for post-compaction context ---
+# Living-document format: extract ## Identity + ## Architecture sections (bounded, ~25 lines).
+# Legacy format: extract pre-`---` or pre-`## Original Intent` preamble.
 if [[ -f "$PROJECT_ROOT/MASTER_PLAN.md" ]]; then
-    PREAMBLE=$(awk '/^---$|^## Original Intent/{exit} {print}' "$PROJECT_ROOT/MASTER_PLAN.md" | head -30)
+    HAS_INITIATIVES=$(grep -cE '^\#\#\#\s+Initiative:' "$PROJECT_ROOT/MASTER_PLAN.md" 2>/dev/null || echo "0")
+    if [[ "$HAS_INITIATIVES" -gt 0 ]]; then
+        # Living-document format: bounded extraction of permanent sections
+        IDENTITY_SECTION=$(awk '/^## Identity/{f=1; next} f && /^## /{exit} f{print}' \
+            "$PROJECT_ROOT/MASTER_PLAN.md" 2>/dev/null | head -12)
+        ARCH_SECTION=$(awk '/^## Architecture/{f=1; next} f && /^## /{exit} f{print}' \
+            "$PROJECT_ROOT/MASTER_PLAN.md" 2>/dev/null | head -10)
+        PREAMBLE=""
+        [[ -n "$IDENTITY_SECTION" ]] && PREAMBLE="## Identity
+${IDENTITY_SECTION}"
+        [[ -n "$ARCH_SECTION" ]] && PREAMBLE="${PREAMBLE}
+## Architecture
+${ARCH_SECTION}"
+
+        # Extract active initiative names for post-compaction resume context
+        ACTIVE_INIT_NAMES=$(awk '
+            /^## Active Initiatives/{in_active=1; next}
+            in_active && /^## /{in_active=0; next}
+            in_active && /^\#\#\# Initiative:/ { name=substr($0, index($0,":")+2) }
+            in_active && /^\*\*Status:\*\* active/ { print name }
+        ' "$PROJECT_ROOT/MASTER_PLAN.md" 2>/dev/null | head -5 | paste -sd', ' - || echo "")
+        if [[ -n "$ACTIVE_INIT_NAMES" ]]; then
+            PREAMBLE="${PREAMBLE}
+Active initiatives: ${ACTIVE_INIT_NAMES}"
+        fi
+    else
+        # Legacy format: extract pre-`---` or pre-`## Original Intent` preamble
+        PREAMBLE=$(awk '/^---$|^## Original Intent/{exit} {print}' "$PROJECT_ROOT/MASTER_PLAN.md" | head -30)
+    fi
     if [[ -n "$PREAMBLE" ]]; then
         CONTEXT_PARTS+=("$PREAMBLE")
     fi
