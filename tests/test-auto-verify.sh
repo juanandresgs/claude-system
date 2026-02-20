@@ -579,6 +579,246 @@ else
     fail_test "Hook output is not valid JSON with additionalContext. Output: $HOOK_OUTPUT"
 fi
 
+# ---------------------------------------------------------------------------
+# Test 12: Diagnostic logging — stderr contains RESPONSE_TEXT length line
+# W6-1 (DEC-V3-001, Issue #129): Check that the diagnostic logging block in
+# check-tester.sh emits the expected stderr output on every tester stop.
+# Verifies: "check-tester: RESPONSE_TEXT length=N" appears in stderr.
+# ---------------------------------------------------------------------------
+run_test "W6-1 diagnostic: RESPONSE_TEXT length appears in stderr"
+
+REAL_PROOF_FILE=$(resolve_real_proof_file)
+SAVED_PROOF=""
+if [[ -f "$REAL_PROOF_FILE" ]]; then
+    SAVED_PROOF=$(cat "$REAL_PROOF_FILE")
+fi
+echo "pending|$(date +%s)" > "$REAL_PROOF_FILE"
+
+DIAG_RESP_TEXT="### Verification Assessment
+### Confidence Level
+**High** - All paths exercised.
+AUTOVERIFY: CLEAN"
+MOCK_JSON=$(jq -n --arg r "$DIAG_RESP_TEXT" '{"last_assistant_message": $r}')
+
+# Capture stderr (diagnostic output) separately from stdout (JSON output)
+HOOK_STDERR=$(echo "$MOCK_JSON" | bash "$HOOKS_DIR/check-tester.sh" 2>&1 1>/dev/null || true)
+
+# Restore
+if [[ -n "$SAVED_PROOF" ]]; then
+    echo "$SAVED_PROOF" > "$REAL_PROOF_FILE"
+else
+    rm -f "$REAL_PROOF_FILE"
+fi
+
+# Verify diagnostic logging fired
+if echo "$HOOK_STDERR" | grep -q 'check-tester: RESPONSE_TEXT length='; then
+    pass_test
+else
+    fail_test "Expected 'check-tester: RESPONSE_TEXT length=' in stderr. Got: $HOOK_STDERR"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 13: Diagnostic logging — AUTOVERIFY signal count appears in stderr
+# When AUTOVERIFY: CLEAN is present, the diagnostic block must log the signal
+# count and secondary validation results.
+# ---------------------------------------------------------------------------
+run_test "W6-1 diagnostic: AUTOVERIFY signal count and secondary validation in stderr"
+
+REAL_PROOF_FILE=$(resolve_real_proof_file)
+SAVED_PROOF=""
+if [[ -f "$REAL_PROOF_FILE" ]]; then
+    SAVED_PROOF=$(cat "$REAL_PROOF_FILE")
+fi
+echo "pending|$(date +%s)" > "$REAL_PROOF_FILE"
+
+DIAG_RESP_TEXT2="### Confidence Level
+**High** - All paths exercised.
+### Coverage
+| Area | Status |
+|------|--------|
+| Core | Fully verified |
+AUTOVERIFY: CLEAN"
+MOCK_JSON2=$(jq -n --arg r "$DIAG_RESP_TEXT2" '{"last_assistant_message": $r}')
+
+HOOK_STDERR2=$(echo "$MOCK_JSON2" | bash "$HOOKS_DIR/check-tester.sh" 2>&1 1>/dev/null || true)
+
+# Restore
+if [[ -n "$SAVED_PROOF" ]]; then
+    echo "$SAVED_PROOF" > "$REAL_PROOF_FILE"
+else
+    rm -f "$REAL_PROOF_FILE"
+fi
+
+# Should log signal count=1 and secondary validation
+if echo "$HOOK_STDERR2" | grep -q 'AUTOVERIFY signal count=1'; then
+    if echo "$HOOK_STDERR2" | grep -q 'secondary validation:'; then
+        pass_test
+    else
+        fail_test "Signal count found but secondary validation missing in stderr. Got: $HOOK_STDERR2"
+    fi
+else
+    fail_test "Expected 'AUTOVERIFY signal count=1' in stderr. Got: $HOOK_STDERR2"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 14: Diagnostic logging — empty RESPONSE_TEXT emits WARNING line
+# When last_assistant_message is empty (empty JSON object), the diagnostic
+# block must emit the WARNING line with payload keys.
+# ---------------------------------------------------------------------------
+run_test "W6-1 diagnostic: empty RESPONSE_TEXT emits WARNING in stderr"
+
+REAL_PROOF_FILE=$(resolve_real_proof_file)
+SAVED_PROOF=""
+if [[ -f "$REAL_PROOF_FILE" ]]; then
+    SAVED_PROOF=$(cat "$REAL_PROOF_FILE")
+fi
+echo "pending|$(date +%s)" > "$REAL_PROOF_FILE"
+
+# Empty last_assistant_message — jq returns empty string for null/missing
+MOCK_JSON_EMPTY=$(jq -n '{"last_assistant_message": ""}')
+
+HOOK_STDERR_EMPTY=$(echo "$MOCK_JSON_EMPTY" | bash "$HOOKS_DIR/check-tester.sh" 2>&1 1>/dev/null || true)
+
+# Restore
+if [[ -n "$SAVED_PROOF" ]]; then
+    echo "$SAVED_PROOF" > "$REAL_PROOF_FILE"
+else
+    rm -f "$REAL_PROOF_FILE"
+fi
+
+if echo "$HOOK_STDERR_EMPTY" | grep -q 'check-tester: WARNING'; then
+    pass_test
+else
+    fail_test "Expected 'check-tester: WARNING' in stderr for empty response. Got: $HOOK_STDERR_EMPTY"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 15: W6-2 summary.md fallback — AUTOVERIFY found via trace summary.md
+# When last_assistant_message is empty but the active trace's summary.md
+# contains AUTOVERIFY: CLEAN, the fallback supplements RESPONSE_TEXT and
+# auto-verify fires.
+# ---------------------------------------------------------------------------
+run_test "W6-2 summary.md fallback: auto-verify fires when signal is in summary.md only"
+
+REAL_PROOF_FILE=$(resolve_real_proof_file)
+SAVED_PROOF=""
+if [[ -f "$REAL_PROOF_FILE" ]]; then
+    SAVED_PROOF=$(cat "$REAL_PROOF_FILE")
+fi
+echo "pending|$(date +%s)" > "$REAL_PROOF_FILE"
+
+# Create a fake active trace with summary.md containing AUTOVERIFY: CLEAN
+TRACE_STORE_PATH="${TRACE_STORE:-$HOME/.claude/traces}"
+FAKE_TRACE_ID="tester-$(date +%Y%m%d-%H%M%S)-test15"
+FAKE_TRACE_DIR="${TRACE_STORE_PATH}/${FAKE_TRACE_ID}"
+mkdir -p "${FAKE_TRACE_DIR}/artifacts"
+
+# Write summary.md with AUTOVERIFY: CLEAN signal
+cat > "${FAKE_TRACE_DIR}/summary.md" <<'SUMMARY_EOF'
+### Verification Assessment
+### Confidence Level
+**High** - All core paths exercised.
+### Coverage
+| Area | Status |
+|------|--------|
+| Core | Fully verified |
+
+AUTOVERIFY: CLEAN
+SUMMARY_EOF
+
+# Write a basic manifest so detect_active_trace can find this trace
+SESSION_ID_FOR_TEST="${CLAUDE_SESSION_ID:-test-session-$$}"
+cat > "${FAKE_TRACE_DIR}/manifest.json" <<MANIFEST_EOF
+{"version":"1","trace_id":"${FAKE_TRACE_ID}","agent_type":"tester","session_id":"${SESSION_ID_FOR_TEST}","project":"/Users/turla/.claude","status":"active","started_at":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+MANIFEST_EOF
+
+# Create the active marker so detect_active_trace returns this trace
+ACTIVE_MARKER="${TRACE_STORE_PATH}/.active-tester-${SESSION_ID_FOR_TEST}"
+echo "$FAKE_TRACE_ID" > "$ACTIVE_MARKER"
+
+# Empty last_assistant_message — should trigger fallback to summary.md
+MOCK_JSON_FALLBACK=$(jq -n '{"last_assistant_message": ""}')
+
+# Single run capturing stdout and stderr to separate temp files (avoids running hook twice
+# which would consume the active marker on the first run, breaking the second).
+_T15_STDOUT=$(mktemp "$PROJECT_ROOT/tmp/test-av-t15-XXXXXX")
+_T15_STDERR=$(mktemp "$PROJECT_ROOT/tmp/test-av-t15-XXXXXX")
+echo "$MOCK_JSON_FALLBACK" | bash "$HOOKS_DIR/check-tester.sh" >"$_T15_STDOUT" 2>"$_T15_STDERR" || true
+HOOK_OUTPUT_FB=$(cat "$_T15_STDOUT")
+HOOK_STDERR_FB=$(cat "$_T15_STDERR")
+rm -f "$_T15_STDOUT" "$_T15_STDERR"
+
+# Clean up fake trace and marker (marker may already be gone if finalize_trace ran)
+rm -f "$ACTIVE_MARKER"
+rm -rf "$FAKE_TRACE_DIR"
+
+# Read proof status
+PROOF_AFTER_FB=""
+if [[ -f "$REAL_PROOF_FILE" ]]; then
+    PROOF_AFTER_FB=$(cut -d'|' -f1 "$REAL_PROOF_FILE" 2>/dev/null || echo "")
+fi
+
+# Restore
+if [[ -n "$SAVED_PROOF" ]]; then
+    echo "$SAVED_PROOF" > "$REAL_PROOF_FILE"
+else
+    rm -f "$REAL_PROOF_FILE"
+fi
+
+# Check: auto-verify should have fired (proof=verified) and supplementing log should be in stderr
+if [[ "$PROOF_AFTER_FB" == "verified" ]]; then
+    if echo "$HOOK_STDERR_FB" | grep -q 'supplementing RESPONSE_TEXT from summary.md'; then
+        if echo "$HOOK_OUTPUT_FB" | grep -q 'AUTO-VERIFIED'; then
+            pass_test
+        else
+            fail_test "proof=verified and supplement logged but AUTO-VERIFIED missing from output. Output: $HOOK_OUTPUT_FB"
+        fi
+    else
+        fail_test "proof=verified but supplement log missing. stderr: $HOOK_STDERR_FB"
+    fi
+else
+    fail_test "Auto-verify did not fire via summary.md fallback. proof='${PROOF_AFTER_FB}'. stderr: $HOOK_STDERR_FB output: $HOOK_OUTPUT_FB"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 16: W6-2 fallback does NOT fire when last_assistant_message has signal
+# When last_assistant_message already contains AUTOVERIFY: CLEAN, the fallback
+# block must not run (no "supplementing" log entry).
+# ---------------------------------------------------------------------------
+run_test "W6-2 fallback: not triggered when signal already in last_assistant_message"
+
+REAL_PROOF_FILE=$(resolve_real_proof_file)
+SAVED_PROOF=""
+if [[ -f "$REAL_PROOF_FILE" ]]; then
+    SAVED_PROOF=$(cat "$REAL_PROOF_FILE")
+fi
+echo "pending|$(date +%s)" > "$REAL_PROOF_FILE"
+
+NO_FALLBACK_TEXT="### Confidence Level
+**High** - All paths exercised.
+### Coverage
+| Area | Status |
+|------|--------|
+| Core | Fully verified |
+AUTOVERIFY: CLEAN"
+MOCK_JSON_NF=$(jq -n --arg r "$NO_FALLBACK_TEXT" '{"last_assistant_message": $r}')
+
+HOOK_STDERR_NF=$(echo "$MOCK_JSON_NF" | bash "$HOOKS_DIR/check-tester.sh" 2>&1 1>/dev/null || true)
+
+# Restore
+if [[ -n "$SAVED_PROOF" ]]; then
+    echo "$SAVED_PROOF" > "$REAL_PROOF_FILE"
+else
+    rm -f "$REAL_PROOF_FILE"
+fi
+
+# Supplementing log must NOT appear
+if echo "$HOOK_STDERR_NF" | grep -q 'supplementing RESPONSE_TEXT from summary.md'; then
+    fail_test "Fallback triggered unnecessarily when signal was already present. stderr: $HOOK_STDERR_NF"
+else
+    pass_test
+fi
+
 # Summary
 echo ""
 echo "=========================================="
