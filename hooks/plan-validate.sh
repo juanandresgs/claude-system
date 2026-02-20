@@ -64,6 +64,11 @@ if ! grep -qiE '^\#.*intent|^\#.*vision|^\#.*user.*request|^\#.*original' "$FILE
     ISSUES+=("Missing original intent/vision section. MASTER_PLAN.md must preserve the user's original request.")
 fi
 
+# Initialize PHASE_HEADERS before format branches — only assigned in old-format branch.
+# Without this, referencing $PHASE_HEADERS at line 199 with set -u crashes when the
+# new format is detected (### Initiative: present, old ## Phase N: absent).
+PHASE_HEADERS=""
+
 if [[ "$HAS_INITIATIVES" -gt 0 ]]; then
     # ================================================================
     # NEW FORMAT: living-document with ### Initiative: headers
