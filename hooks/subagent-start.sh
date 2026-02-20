@@ -58,9 +58,30 @@ else
 fi
 CONTEXT_PARTS+=("$CTX_LINE")
 
-# --- Inject project architecture from MASTER_PLAN.md preamble ---
+# --- Inject project architecture from MASTER_PLAN.md ---
+# Living-document format: extract ## Architecture section (top-level).
+# Legacy format: extract ### Architecture subsection within preamble.
 if [[ -f "$PROJECT_ROOT/MASTER_PLAN.md" ]]; then
-    ARCH_SECTION=$(awk '/^### Architecture/{found=1; next} /^###|^## |^---/{if(found) exit} found{print}' "$PROJECT_ROOT/MASTER_PLAN.md" | head -15)
+    HAS_INITIATIVES=$(grep -cE '^\#\#\#\s+Initiative:' "$PROJECT_ROOT/MASTER_PLAN.md" 2>/dev/null || echo "0")
+    if [[ "$HAS_INITIATIVES" -gt 0 ]]; then
+        # Living-document format: ## Architecture is a top-level section
+        ARCH_SECTION=$(awk '/^## Architecture/{f=1; next} f && /^## /{exit} f{print}' \
+            "$PROJECT_ROOT/MASTER_PLAN.md" 2>/dev/null | head -15)
+        # Also extract active initiative name for context line enrichment
+        ACTIVE_INIT=$(awk '
+            /^## Active Initiatives/{in_active=1; next}
+            in_active && /^## /{in_active=0; next}
+            in_active && /^\#\#\# Initiative:/ { name=substr($0, index($0,":")+2) }
+            in_active && /^\*\*Status:\*\* active/ { print name; exit }
+        ' "$PROJECT_ROOT/MASTER_PLAN.md" 2>/dev/null | head -1 || echo "")
+        if [[ -n "$ACTIVE_INIT" ]]; then
+            CTX_LINE="$CTX_LINE | Initiative: $ACTIVE_INIT"
+        fi
+    else
+        # Legacy format: ### Architecture is nested within a preamble section
+        ARCH_SECTION=$(awk '/^### Architecture/{found=1; next} /^###|^## |^---/{if(found) exit} found{print}' \
+            "$PROJECT_ROOT/MASTER_PLAN.md" | head -15)
+    fi
     if [[ -n "$ARCH_SECTION" ]]; then
         CONTEXT_PARTS+=("Project architecture:")
         CONTEXT_PARTS+=("$ARCH_SECTION")

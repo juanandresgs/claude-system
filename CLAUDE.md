@@ -41,6 +41,8 @@ The orchestrator dispatches to specialized agents — it does NOT write source c
 | Post-guardian health check | Orchestrator | Invoke `/diagnose` when check-guardian.sh suggests it |
 | Editing `~/.claude/` config | Orchestrator | Trivial edits only (gitignore, 1-line, typos). Features use worktrees. |
 
+**Planner creates or amends the plan:** When MASTER_PLAN.md exists with `## Identity`, the Planner adds a new `### Initiative:` block rather than overwriting. When it does not exist, Planner creates the full living-document structure. Never dispatch Planner to replace an existing plan — dispatch to extend it.
+
 Agents are interactive — they handle the full approval cycle (present → approve → execute → confirm). If an agent exits after asking approval, wait for user response, then resume with "The user approved. Proceed."
 
 **Auto-dispatch to Guardian:** When work is ready for commit, invoke Guardian directly with full context (files, issue numbers, push intent). Do NOT ask "should I commit?" before dispatching. Do NOT ask "want me to push?" after Guardian returns. Guardian owns the entire approval cycle — one user approval covers stage → commit → close → push.
@@ -72,11 +74,11 @@ report, engage in Q&A, user approval triggers prompt-submit.sh gate transition.
 
 **Trace Protocol:** Agents write evidence to disk (TRACE_DIR/artifacts/), not return messages. Return messages stay under 1500 tokens. Read TRACE_DIR/summary.md for details on demand.
 
-**Session Acclimation:** MASTER_PLAN.md's Project Overview section is auto-injected at
-session start. This provides project identity, architecture, and active work context.
-Development log digest (recent traces) shows what agents did recently.
-Failed/crashed trace summaries are auto-injected — act on them without prompting.
-When the task touches unfamiliar areas, read relevant files from the Resources table.
+**Session Acclimation:** MASTER_PLAN.md's `## Identity` and active initiative sections are
+auto-injected at session start (bounded to ~200 lines regardless of plan age). This provides
+project identity, architecture, and active work context. Development log digest (recent traces)
+shows what agents did recently. Failed/crashed trace summaries are auto-injected — act on them
+without prompting. When the task touches unfamiliar areas, read relevant files from the Resources table.
 
 **max_turns enforcement:** Every Task invocation MUST include max_turns.
 - Implementer: max_turns=75
@@ -95,9 +97,10 @@ When the task touches unfamiliar areas, read relevant files from the Resources t
 4. **Nothing Done Until Tested** — Tests pass before declaring completion. Can't get tests working? Stop and ask.
 5. **Solid Foundations** — Real unit tests, not mocks. Fail loudly and early, never silently.
 6. **No Implementation Without Plan** — MASTER_PLAN.md before first line of code. Plan produces GitHub issues. Issues drive implementation.
+   MASTER_PLAN.md is a **living project record**. It persists across initiatives. The Planner adds new initiatives; it does not replace the plan. Completed initiatives compress to ~5 lines and move to the Completed section — the plan is never discarded.
 7. **Code is Truth** — Documentation derives from code. Annotate at the point of implementation. When docs and code conflict, code is right.
 8. **Approval Gates** — Commits, merges, force pushes, and bulk destructive ops (deleting branches, removing worktrees with uncommitted work, pruning refs) require explicit user approval and go through Guardian.
-9. **Track in Issues, Not Files** — Deferred work, future ideas, and task status go into GitHub issues. MASTER_PLAN.md is a planning artifact that produces issues — it updates only at phase boundaries (status transitions and decision log entries), never for individual merges.
+9. **Track in Issues, Not Files** — Deferred work, future ideas, and task status go into GitHub issues. MASTER_PLAN.md updates only at initiative/phase boundaries (status transitions and decision log entries), never for individual merges.
 10. **Proof Before Commit** — The tester runs the feature live, presents evidence,
     and provides a verification assessment (methodology, coverage gaps, confidence
     level). Present the full report to the user. Clean e2e verifications

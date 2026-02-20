@@ -590,7 +590,9 @@ warnings were ignored by agents — this hook enforces with hard denies.
 
 **What you can count on:**
 - Write to source file in a git repo with no `MASTER_PLAN.md` → DENIED.
-- `MASTER_PLAN.md` exists but all phases completed → DENIED.
+- `MASTER_PLAN.md` exists but all initiatives completed (`PLAN_LIFECYCLE=dormant`) → DENIED with message "All initiatives are completed. Add a new initiative before implementing."
+- Living-document format: `PLAN_LIFECYCLE` is `none`/`active`/`dormant` (never `completed`). Dormant means all `### Initiative:` blocks have status completed — add a new initiative to resume work.
+- Legacy format (no `### Initiative:` headers): `PLAN_LIFECYCLE` is `none`/`active`/`dormant` (was `completed` pre-Phase 2). All-phases-done → dormant.
 - Source churn ≥35% since plan update → DENIED.
 - Decision drift ≥5 out-of-sync decisions → DENIED.
 - Source churn 15-34% or drift 2-4 → advisory warning.
@@ -951,17 +953,27 @@ lets each agent go deep on its role without context dilution.
 ### Planner Agent (agents/planner.md)
 
 **Input:** User feature description, existing codebase, prior research.
-**Output:** `MASTER_PLAN.md` with phases, requirements (REQ-P0-NNN), decisions (DEC-NNN),
-and GitHub Issues (one per phase).
+**Output:** `MASTER_PLAN.md` updated with a new `### Initiative:` block (or created fresh),
+requirements (REQ-P0-NNN), decisions (DEC-NNN), and GitHub Issues (one per phase).
+
+**Create-or-amend workflow:**
+- If `MASTER_PLAN.md` with `## Identity` exists → **amend**: add new `### Initiative:` block
+  under `## Active Initiatives`. Preserve existing content. Never overwrite.
+- If `MASTER_PLAN.md` does not exist → **create**: full living-document structure with
+  `## Identity`, `## Architecture`, `## Principles`, `## Decision Log`, `## Active Initiatives`,
+  `## Completed Initiatives` sections.
+- Completing an initiative → update its `**Status:**` to `completed`, then call
+  `compress_initiative()` or instruct Guardian to compress it after the final phase merge.
 
 **Phases:**
 1. Problem decomposition — requirements (P0/P1/P2), success metrics, evidence gathering.
 2. Architecture + Research gate — check `.claude/research-log.md`, invoke `/deep-research` if gaps.
-3. Plan output — MASTER_PLAN.md with decision rationale, worktree strategy.
+3. Plan output — add initiative to MASTER_PLAN.md with decision rationale, worktree strategy.
 4. GitHub Issues — one per phase, linked from plan.
 
 **SubagentStop check (check-planner.sh):**
-- MASTER_PLAN.md exists and has at least one phase.
+- Living-document format: MASTER_PLAN.md exists with `## Identity`, `## Architecture`, `## Decision Log`, at least one `### Initiative:` header with `**Status:**`.
+- Legacy format: MASTER_PLAN.md exists and has at least one `## Phase N` header.
 - At least one GitHub Issue created.
 - Plan includes `@decision` annotations.
 
@@ -1429,7 +1441,7 @@ TRACE_STORE="$HOME/.claude/traces"
 
 **State-reading functions:**
 - `get_git_state <root>` → `GIT_BRANCH`, `GIT_DIRTY_COUNT`, `GIT_WORKTREES`, `GIT_WT_COUNT`
-- `get_plan_status <root>` → `PLAN_EXISTS`, `PLAN_PHASE`, `PLAN_TOTAL_PHASES`, `PLAN_COMPLETED_PHASES`, `PLAN_SOURCE_CHURN_PCT`, `PLAN_LIFECYCLE` (none/active/completed)
+- `get_plan_status <root>` → `PLAN_EXISTS`, `PLAN_PHASE`, `PLAN_TOTAL_PHASES`, `PLAN_COMPLETED_PHASES`, `PLAN_SOURCE_CHURN_PCT`, `PLAN_LIFECYCLE` (none/active/dormant), `PLAN_ACTIVE_INITIATIVES` (count), `PLAN_TOTAL_INITIATIVES` (count). Living-document format detected by `### Initiative:` headers. Dormant = plan exists but no active initiatives remain — add a new initiative, not a new plan.
 - `get_session_changes <root>` → `SESSION_CHANGED_COUNT`
 - `get_drift_data <root>` → `DRIFT_UNPLANNED_COUNT`, `DRIFT_UNIMPLEMENTED_COUNT`, `DRIFT_LAST_AUDIT_EPOCH`
 - `get_research_status <root>` → `RESEARCH_EXISTS`, `RESEARCH_ENTRY_COUNT`, `RESEARCH_RECENT_TOPICS`
@@ -1446,7 +1458,8 @@ TRACE_STORE="$HOME/.claude/traces"
 - `write_statusline_cache <root>` — writes JSON to `.statusline-cache` (atomic)
 - `atomic_write <target> <content>` — temp-file-then-mv for POSIX-safe atomic writes
 - `safe_cleanup <target> <fallback>` — cd-out-first before deletion to prevent CWD death
-- `archive_plan <root>` — moves MASTER_PLAN.md to archived-plans/ with date prefix
+- `archive_plan <root>` — moves MASTER_PLAN.md to archived-plans/ with date prefix. **Deprecated for living-document format** — use `compress_initiative()` instead, which preserves the plan.
+- `compress_initiative <root> <initiative_name>` — moves a completed initiative from `## Active Initiatives` to `## Completed Initiatives` as a table row (~5 lines). Keeps the plan growing in place. Use after Guardian confirms all phases in the initiative are done.
 - `append_audit <root> <event> <detail>` — appends to `.audit-log`
 - `append_session_event <event> <json> <root>` — appends to `.session-events.jsonl`
 
