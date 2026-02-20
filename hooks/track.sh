@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-set -euo pipefail
-
 # Project-aware file change tracking.
 # PostToolUse hook — matcher: Write|Edit
 #
 # Tracks file changes per-session in the PROJECT's .claude directory.
 # Uses CLAUDE_PROJECT_DIR when available, falls back to git root detection.
 # Session-scoped to avoid collisions with concurrent sessions.
+# Also invalidates .proof-status when verified source files change post-verification.
+
+set -euo pipefail
 
 source "$(dirname "$0")/source-lib.sh"
 
@@ -56,9 +57,25 @@ PROOF_FILE="$TRACKING_DIR/.proof-status"
 if [[ -f "$PROOF_FILE" ]]; then
     PROOF_STATUS=$(cut -d'|' -f1 "$PROOF_FILE")
     if [[ "$PROOF_STATUS" == "verified" ]]; then
-        # Only invalidate for source file changes (not tests, config, docs)
+        # Only invalidate for source file changes (not tests, config, docs).
+        # Use RELATIVE_PATH (relative to project root) for exclusion checks so that
+        # ancestor directories containing ".claude" (e.g. ~/.claude/tmp/test-XXXX/main.sh)
+        # do not false-positive the exclusion. The extension check stays on the full
+        # FILE_PATH since extensions are at the tail and unaffected by directory depth.
+        # @decision DEC-TRACK-001
+        # @title Use relative path for proof invalidation exclusions in track.sh
+        # @status accepted
+        # @rationale Using the absolute FILE_PATH for exclusion matching caused all
+        #   source files in the meta-repo (~/.claude) to be excluded because their
+        #   absolute paths contain ".claude". Changing to relative path (FILE_PATH
+        #   stripped of PROJECT_ROOT prefix) restricts the exclusion to the filename
+        #   and path within the project, not the project's ancestor directories.
+        #   Also fixes the same issue for projects whose absolute paths contain
+        #   any of the exclusion keywords (node_modules, .git, vendor, etc. in the
+        #   path above the project root are now ignored). Fixes #135/#43.
+        RELATIVE_PATH="${FILE_PATH#${PROJECT_ROOT}/}"
         if [[ "$FILE_PATH" =~ \.(ts|tsx|js|jsx|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh)$ ]] \
-           && [[ ! "$FILE_PATH" =~ (\.test\.|\.spec\.|__tests__|\.config\.|node_modules|vendor|dist|\.git|\.claude) ]]; then
+           && [[ ! "$RELATIVE_PATH" =~ (\.test\.|\.spec\.|__tests__|\.config\.|node_modules|vendor|dist|\.git|\.claude) ]]; then
             echo "pending|$(date +%s)" > "$PROOF_FILE"
         fi
     fi

@@ -137,6 +137,20 @@ case "$TEST_RESULT" in
 esac
 SUMMARY+="\n$GIT_LINE"
 
+# Proof-of-work status line (W7-1: #42 residual, #134)
+PROOF_STATUS_FILE="${CLAUDE_DIR}/.proof-status"
+if [[ -f "$PROOF_STATUS_FILE" ]]; then
+    _PROOF_VAL=$(cut -d'|' -f1 "$PROOF_STATUS_FILE" 2>/dev/null || echo "")
+    case "$_PROOF_VAL" in
+        verified)          SUMMARY+="\nProof: verified." ;;
+        pending)           SUMMARY+="\nProof: PENDING." ;;
+        needs-verification) SUMMARY+="\nProof: PENDING." ;;
+        *)                 SUMMARY+="\nProof: not started." ;;
+    esac
+else
+    SUMMARY+="\nProof: not started."
+fi
+
 # Workflow phase detection → next-action guidance
 IS_MAIN=false
 [[ "$GIT_BRANCH" == "main" || "$GIT_BRANCH" == "master" ]] && IS_MAIN=true
