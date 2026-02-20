@@ -9,6 +9,8 @@
 #   4. Stats line includes correct counts (tool calls, files, checkpoints)
 #   5. Guardian injection path: 10+ events produce non-empty output with header+Stats
 #   6. Stats accuracy: known event counts map to correct TRAJ_* variables
+#   7. (W6-3-A) Guardian data flow: SESSION_SUMMARY non-empty when session events exist
+#   8. (W6-3-B) Trajectory field precision: all 5 TRAJ_* variables match known input
 #
 # @decision DEC-V2-005
 # @title Test suite for session context in commits
@@ -17,8 +19,12 @@
 #   structured output for non-trivial sessions, silence for trivial ones.
 #   W5-1 adds Guardian injection path test (10+ events) and trajectory accuracy
 #   test with known counts to validate TRAJ_* variable correctness.
-#   Uses temp directories with synthetic .session-events.jsonl to avoid
-#   dependency on live session state.
+#   W6-3 adds two further tests: (A) verifies the guardian branch data flow from
+#   subagent-start.sh — that SESSION_SUMMARY is non-empty when session events exist —
+#   and (B) verifies all five TRAJ_* trajectory fields precisely match a synthetic
+#   event log with known exact counts (7 writes to 4 unique files, 3 test failures,
+#   2 checkpoints, 1 rewind). Uses temp directories with synthetic
+#   .session-events.jsonl to avoid dependency on live session state.
 
 set -euo pipefail
 
@@ -468,6 +474,128 @@ test_stats_accuracy_known_counts() {
 }
 
 # ============================================================================
+# Test 11 (W6-3-A): Guardian data flow — SESSION_SUMMARY non-empty when events exist
+# ============================================================================
+# This test mirrors what subagent-start.sh does in the guardian) case:
+#   SESSION_SUMMARY=$(get_session_summary_context "$PROJECT_ROOT" 2>/dev/null || echo "")
+# The test verifies that a non-trivial session (sufficient events) produces a
+# non-empty SESSION_SUMMARY, which is what drives the rich commit context injection.
+# ============================================================================
+
+test_guardian_session_summary_data_flow() {
+    run_test
+    echo -n "Testing guardian SESSION_SUMMARY data flow (non-empty for sufficient events)... "
+
+    local dir
+    dir=$(make_project)
+    trap "rm -rf '$dir'" RETURN
+
+    # Build a realistic pre-commit session that guardian would see:
+    # 8 writes across 3 files + 1 test failure + 1 checkpoint + 1 agent_start = 12 events
+    write_event      "$dir" "hooks/guard.sh"       "2026-02-20T09:00:00Z"
+    write_event      "$dir" "hooks/context-lib.sh" "2026-02-20T09:01:00Z"
+    test_fail_event  "$dir" "test_guard_merge"     "2026-02-20T09:02:00Z"
+    write_event      "$dir" "hooks/guard.sh"       "2026-02-20T09:03:00Z"
+    write_event      "$dir" "tests/run-hooks.sh"   "2026-02-20T09:04:00Z"
+    checkpoint_event "$dir"                        "2026-02-20T09:05:00Z"
+    write_event      "$dir" "hooks/guard.sh"       "2026-02-20T09:06:00Z"
+    agent_start_event "$dir" "implementer"         "2026-02-20T09:07:00Z"
+    write_event      "$dir" "hooks/context-lib.sh" "2026-02-20T09:08:00Z"
+    write_event      "$dir" "tests/run-hooks.sh"   "2026-02-20T09:09:00Z"
+    write_event      "$dir" "hooks/guard.sh"       "2026-02-20T09:10:00Z"
+    write_event      "$dir" "hooks/guard.sh"       "2026-02-20T09:11:00Z"
+
+    # Replicate the guardian branch data flow from subagent-start.sh:
+    #   SESSION_SUMMARY=$(get_session_summary_context "$PROJECT_ROOT" 2>/dev/null || echo "")
+    local SESSION_SUMMARY
+    SESSION_SUMMARY=$(call_summary "$dir")
+
+    if [[ -n "$SESSION_SUMMARY" ]]; then
+        pass_test "guardian SESSION_SUMMARY data flow: non-empty for 12-event session"
+    else
+        fail_test "guardian SESSION_SUMMARY data flow: expected non-empty, got empty" \
+             "Ensure session has sufficient events for get_session_summary_context()"
+    fi
+}
+
+# ============================================================================
+# Test 12 (W6-3-B): Trajectory field precision — all 5 TRAJ_* match known input
+# ============================================================================
+# Verifies that every trajectory field (tool_uses, files_changed, test_failures,
+# checkpoints, rewinds) maps precisely to the synthetic event log. This catches
+# regressions in get_session_trajectory() parsing logic with exact-count assertions.
+# ============================================================================
+
+test_trajectory_field_precision() {
+    run_test
+    echo -n "Testing trajectory field precision with exact synthetic counts... "
+
+    local dir
+    dir=$(make_project)
+    trap "rm -rf '$dir'" RETURN
+
+    # Synthetic event log with precisely known counts:
+    #   7 writes across 4 unique files:
+    #     hooks/auth.sh   x3
+    #     hooks/guard.sh  x2
+    #     src/main.py     x1
+    #     tests/test.sh   x1
+    #   3 test_run fail events
+    #   2 checkpoint events
+    #   1 rewind event
+    write_event      "$dir" "hooks/auth.sh"   "2026-02-20T10:00:00Z"
+    test_fail_event  "$dir" "test_auth_jwt"   "2026-02-20T10:01:00Z"
+    write_event      "$dir" "hooks/auth.sh"   "2026-02-20T10:02:00Z"
+    test_fail_event  "$dir" "test_auth_jwt"   "2026-02-20T10:03:00Z"
+    write_event      "$dir" "hooks/guard.sh"  "2026-02-20T10:04:00Z"
+    checkpoint_event "$dir"                   "2026-02-20T10:05:00Z"
+    write_event      "$dir" "src/main.py"     "2026-02-20T10:06:00Z"
+    test_fail_event  "$dir" "test_main_init"  "2026-02-20T10:07:00Z"
+    write_event      "$dir" "hooks/auth.sh"   "2026-02-20T10:08:00Z"
+    checkpoint_event "$dir"                   "2026-02-20T10:09:00Z"
+    write_event      "$dir" "hooks/guard.sh"  "2026-02-20T10:10:00Z"
+    rewind_event     "$dir"                   "2026-02-20T10:11:00Z"
+    write_event      "$dir" "tests/test.sh"   "2026-02-20T10:12:00Z"
+
+    local traj
+    traj=$(call_trajectory "$dir")
+
+    local tool_calls files_modified test_failures checkpoints rewinds
+    tool_calls=$(echo "$traj"     | grep "^TRAJ_TOOL_CALLS="    | cut -d= -f2)
+    files_modified=$(echo "$traj" | grep "^TRAJ_FILES_MODIFIED=" | cut -d= -f2)
+    test_failures=$(echo "$traj"  | grep "^TRAJ_TEST_FAILURES="  | cut -d= -f2)
+    checkpoints=$(echo "$traj"    | grep "^TRAJ_CHECKPOINTS="    | cut -d= -f2)
+    rewinds=$(echo "$traj"        | grep "^TRAJ_REWINDS="         | cut -d= -f2)
+
+    local all_ok=true
+
+    if [[ "$tool_calls" -ne 7 ]]; then
+        fail_test "TRAJ_TOOL_CALLS: expected 7, got '$tool_calls'" "$traj"
+        all_ok=false
+    fi
+    if [[ "$files_modified" -ne 4 ]]; then
+        fail_test "TRAJ_FILES_MODIFIED: expected 4 unique files, got '$files_modified'" "$traj"
+        all_ok=false
+    fi
+    if [[ "$test_failures" -ne 3 ]]; then
+        fail_test "TRAJ_TEST_FAILURES: expected 3, got '$test_failures'" "$traj"
+        all_ok=false
+    fi
+    if [[ "$checkpoints" -ne 2 ]]; then
+        fail_test "TRAJ_CHECKPOINTS: expected 2, got '$checkpoints'" "$traj"
+        all_ok=false
+    fi
+    if [[ "$rewinds" -ne 1 ]]; then
+        fail_test "TRAJ_REWINDS: expected 1, got '$rewinds'" "$traj"
+        all_ok=false
+    fi
+
+    if [[ "$all_ok" == "true" ]]; then
+        pass_test "trajectory field precision: 7 writes, 4 unique files, 3 failures, 2 checkpoints, 1 rewind"
+    fi
+}
+
+# ============================================================================
 # Run all tests
 # ============================================================================
 
@@ -484,6 +612,8 @@ test_friction_line_on_failures
 test_no_friction_on_clean_session
 test_guardian_injection_path
 test_stats_accuracy_known_counts
+test_guardian_session_summary_data_flow
+test_trajectory_field_precision
 
 echo ""
 echo "========================================="

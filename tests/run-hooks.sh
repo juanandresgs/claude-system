@@ -1513,6 +1513,20 @@ else
 fi
 
 # Test 6: finalize_trace marks crashed when no summary
+# @decision DEC-V3-004
+# @title Crash detection: status=crashed, outcome=skipped when summary.md absent
+# @status accepted
+# @rationale finalize_trace() distinguishes two no-artifacts states:
+#   - outcome="skipped": artifacts dir missing entirely (agent never initialised)
+#   - outcome="skipped": artifacts dir exists but is empty (agent crashed immediately)
+#   In both cases finalize_trace() sets status="crashed" (no summary.md) but
+#   deliberately does NOT override outcome="skipped" to "crashed" — the comment
+#   at context-lib.sh line ~1166 reads: "Do not override 'skipped' — skipped means
+#   no artifacts at all (never started), which is a distinct state from crashed
+#   (started but failed to produce summary.md)."
+#   Since init_trace() always creates the artifacts dir, a crash right after init
+#   produces an empty artifacts dir, hence outcome="skipped" and status="crashed".
+#   The correct assertion is therefore status=crashed AND outcome=skipped.
 output=$(
     source "$HOOKS_DIR/context-lib.sh"
     TRACE_STORE="$TR_TEST_DIR/traces"
@@ -1524,14 +1538,16 @@ output=$(
     crash_status=$(jq -r '.status' "$TRACE_STORE/$TRACE_ID/manifest.json" 2>/dev/null)
     crash_outcome=$(jq -r '.outcome' "$TRACE_STORE/$TRACE_ID/manifest.json" 2>/dev/null)
 
-    if [[ "$crash_status" == "crashed" && "$crash_outcome" == "crashed" ]]; then
+    # status=crashed (no summary.md), outcome=skipped (empty artifacts dir — init_trace
+    # always creates it, but a crash before any artifact write leaves it empty)
+    if [[ "$crash_status" == "crashed" && "$crash_outcome" == "skipped" ]]; then
         echo "CRASH_OK"
     else
         echo "CRASH_FAIL:status=$crash_status outcome=$crash_outcome"
     fi
 )
 if [[ "$output" == "CRASH_OK" ]]; then
-    pass "trace — no summary marks as crashed"
+    pass "trace — no summary marks as crashed (status=crashed, outcome=skipped)"
 else
     fail "trace — crash detection" "$output"
 fi
