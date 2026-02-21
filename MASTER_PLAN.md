@@ -6,7 +6,7 @@
 **Languages:** bash (78%), markdown (15%), python (7%)
 **Root:** /Users/turla/.claude
 **Created:** 2026-02-18
-**Last updated:** 2026-02-19
+**Last updated:** 2026-02-21
 
 This is the Claude Code configuration directory. It shapes how Claude Code operates
 across all projects via lifecycle hooks, specialized agents, research skills, and
@@ -75,6 +75,9 @@ project's institutional memory.
 | 2026-02-19 | DEC-PLAN-004 | plan-redesign | Tiered session injection with bounded extraction | Identity + Active Initiatives + Recent Decisions, capped ~200 lines |
 | 2026-02-19 | DEC-PLAN-005 | plan-redesign | Manual migration via planner transform | One-time transform, no migration script maintenance |
 | 2026-02-19 | DEC-PLAN-006 | plan-redesign | Deprecate archive_plan(), add compress_initiative() | Keep backward compat, new function compresses within plan |
+| 2026-02-21 | DEC-GOV-001 | state-governance | State file registry as structural gate | Declarative JSON registry with lint test catches unscoped writes at test time |
+| 2026-02-21 | DEC-GOV-002 | state-governance | Multi-CWD test execution | Second pass with alternate CWD catches environment assumptions |
+| 2026-02-21 | DEC-GOV-003 | state-governance | Observatory signal for cross-project state reads | Fits existing analyzer pipeline, surfaces contamination in reports |
 
 ---
 
@@ -807,6 +810,266 @@ Main is sacred. Each phase works in its own worktree:
 
 Implementation order: Phase 1 first (this document), then Phase 2 (hooks must match format),
 then Phase 3 (secondary hooks + docs), then Phase 4 (tests validate everything).
+
+---
+
+### Initiative: State Governance & Isolation Hardening
+**Status:** active
+**Started:** 2026-02-21
+**Goal:** Prevent cross-project state contamination structurally rather than reactively
+
+> Cross-project state contamination was fixed reactively during v3 (project hash scoping via
+> DEC-ISOLATION-001 through DEC-ISOLATION-007). The fixes work, but three structural gaps remain:
+> no registry of state files to catch unscoped writes, tests that only run from ~/.claude CWD so
+> environment assumptions go undetected, and no runtime signal when cross-project state is read.
+> This initiative adds structural gates and runtime detection so future state file additions
+> cannot regress isolation.
+
+**Dominant Constraint:** reliability (every unregistered state file is a potential contamination vector)
+
+#### Goals
+- REQ-GOAL-001: Every state file write is registered and scoped (structural gate)
+- REQ-GOAL-002: Tests catch CWD-dependent code paths that break in production
+- REQ-GOAL-003: Runtime contamination is detectable without manual diagnosis
+
+#### Non-Goals
+- REQ-NOGO-001: Automatic remediation of contamination — detect, don't fix
+- REQ-NOGO-002: Refactoring all state files to a new location — structural gate, not migration
+- REQ-NOGO-003: Multi-instance locking (#115 scope) — different problem space
+
+#### Requirements
+
+**Must-Have (P0)**
+
+- REQ-P0-001: State file registry (hooks/state-registry.json) declares every state file.
+  Acceptance: Given a hook writes to CLAUDE_DIR or TRACE_STORE, When registry is checked,
+  Then the target path pattern appears in state-registry.json with scope and writer fields.
+
+- REQ-P0-002: Lint test catches unregistered state writes.
+  Acceptance: Given a new hook writes `.foo-bar` to CLAUDE_DIR without registry entry,
+  When test-state-registry.sh runs, Then it fails with the unregistered path identified.
+
+- REQ-P0-003: State-writing tests execute from alternate CWD.
+  Acceptance: Given run-hooks.sh completes its primary pass, When the isolation pass runs
+  from /tmp/test-cwd-XXXX, Then state-writing tests produce identical results.
+
+- REQ-P0-004: Isolation assertions verify project-scoped suffixes.
+  Acceptance: Given a test writes .proof-status in alternate CWD, When the write completes,
+  Then the file path contains the project hash suffix (not bare .proof-status).
+
+- REQ-P0-005: Observatory analyzer detects cross-project state reads.
+  Acceptance: Given trace data shows session reading .proof-status-{hashA} while
+  PROJECT_ROOT hashes to hashB, When analyzer runs, Then a cross-project-contamination
+  signal is emitted.
+
+- REQ-P0-006: Cross-project signal surfaces in observatory reports.
+  Acceptance: Given the analyzer found contamination signals, When observatory report
+  generates, Then the signal appears in the findings section with project hashes and
+  affected state files.
+
+**Nice-to-Have (P1)**
+
+- REQ-P1-001: Registry includes reader hooks (not just writers) for full dependency graph.
+- REQ-P1-002: `state-registry.json` is validated by plan-validate.sh on planner runs.
+- REQ-P1-003: Observatory signal includes remediation suggestion (which hash to clean).
+
+**Future Consideration (P2)**
+
+- REQ-P2-001: Auto-cleanup of orphaned state files from stale project hashes.
+- REQ-P2-002: State file migration tool for hash scheme changes.
+
+#### Definition of Done
+
+All P0 requirements satisfied. State registry covers all existing state writes (10+ entries).
+Lint test catches unregistered writes. Tests pass from both ~/.claude and alternate CWD.
+Observatory analyzer detects and reports cross-project contamination. No regressions in
+existing test suite.
+
+#### Architectural Decisions
+
+- DEC-GOV-001: State file registry as structural gate against unscoped writes.
+  Addresses: REQ-GOAL-001, REQ-P0-001, REQ-P0-002.
+  Rationale: A declarative JSON registry (hooks/state-registry.json) lists every state file
+  with its scope (global/per-project/per-session), writer hook, and path pattern. A lint test
+  greps all hook .sh files for writes to CLAUDE_DIR/TRACE_STORE and verifies each target
+  appears in the registry. Zero runtime cost. New state files require explicit registration
+  or the lint test fails.
+
+- DEC-GOV-002: Multi-CWD test execution to catch environment assumptions.
+  Addresses: REQ-GOAL-002, REQ-P0-003, REQ-P0-004.
+  Rationale: Adding a second pass in run-hooks.sh that sets CWD to a temp directory (not
+  ~/.claude) reuses existing test infrastructure. State-writing tests get isolation
+  assertions that verify output paths use project-scoped suffixes. Catches CWD assumptions
+  that only work when running from ~/.claude.
+
+- DEC-GOV-003: Observatory signal for cross-project state reads.
+  Addresses: REQ-GOAL-003, REQ-P0-005, REQ-P0-006.
+  Rationale: An observatory analyzer pattern detects when a session reads state written by
+  a different project hash. Fits the existing analyze pipeline. Surfaces in reports alongside
+  other signals. No runtime overhead in hooks — analysis happens post-hoc on trace data.
+
+#### Phase 1: State File Registry + Lint Test
+**Status:** planned
+**Decision IDs:** DEC-GOV-001
+**Requirements:** REQ-P0-001, REQ-P0-002
+**Issues:** #143
+**Definition of Done:**
+- REQ-P0-001 satisfied: state-registry.json exists with all current state file entries
+- REQ-P0-002 satisfied: test-state-registry.sh fails on unregistered writes
+
+##### Planned Decisions
+- DEC-GOV-001: JSON registry with lint test — grep hook sources for state writes, cross-check against registry — Addresses: REQ-P0-001, REQ-P0-002
+
+##### Work Items
+
+**W1-1: Create hooks/state-registry.json**
+- Declare every state file written by hooks to CLAUDE_DIR or TRACE_STORE.
+- Fields per entry: `path_pattern` (glob, e.g. `.proof-status-*`), `scope` (global|per-project|per-session),
+  `writer` (hook filename), `readers` (list of hook filenames), `description` (1-line purpose).
+- Initial inventory from analysis.md: ~10 entries covering proof-status, active-worktree-path,
+  guardian-start-sha, session-start-epoch, test-status, active-{type} markers, session index.
+- Evidence base: grep for `> "${CLAUDE_DIR}`, `> "${TRACE_STORE}`, `> "$(get_claude_dir)` across all hooks.
+
+**W1-2: Create tests/test-state-registry.sh**
+- Grep all hooks/*.sh for patterns: `> "$CLAUDE_DIR/`, `> "${CLAUDE_DIR}/`, `> "$(get_claude_dir)/`,
+  `> "$TRACE_STORE/`, `> "${TRACE_STORE}/`.
+- Extract the target filename from each match.
+- Cross-check each target against state-registry.json entries.
+- TAP-compatible output. Fail on any unregistered write.
+- Also validate: every registry entry has a matching write in hook source (no stale entries).
+
+**W1-3: Integrate into run-hooks.sh**
+- Add test-state-registry.sh to the test suite runner.
+- Ensure it runs as part of the standard `bash tests/run-hooks.sh` invocation.
+
+##### Critical Files
+- `hooks/state-registry.json` — New: declarative state file registry
+- `tests/test-state-registry.sh` — New: lint test for unregistered writes
+- `tests/run-hooks.sh` — Integration of new test
+- `hooks/track.sh` — State writes: .proof-status (lines 70-71)
+- `hooks/prompt-submit.sh` — State writes: .proof-status, .session-start-epoch (lines 60, 153-154)
+- `hooks/task-track.sh` — State writes: .active-worktree-path (line 195)
+- `hooks/context-lib.sh` — State writes: .active-{type} markers (line 1107)
+
+##### Decision Log
+<!-- Guardian appends here after phase completion -->
+
+#### Phase 2: Multi-Context Test Runner
+**Status:** planned
+**Decision IDs:** DEC-GOV-002
+**Requirements:** REQ-P0-003, REQ-P0-004
+**Issues:** #144
+**Definition of Done:**
+- REQ-P0-003 satisfied: State-writing tests pass from alternate CWD
+- REQ-P0-004 satisfied: Isolation assertions verify project-scoped suffixes
+
+##### Planned Decisions
+- DEC-GOV-002: Second pass with alternate CWD in run-hooks.sh — Addresses: REQ-P0-003, REQ-P0-004
+
+##### Work Items
+
+**W2-1: Add isolation pass to run-hooks.sh**
+- After the primary test pass completes, create a temp directory (`mktemp -d`).
+- Re-run state-writing test suites (test-project-isolation.sh, test-proof-chain.sh,
+  test-proof-gate.sh, test-state-registry.sh) with CWD set to the temp directory.
+- Use `(cd "$TMPDIR" && bash "$SCRIPT_DIR/test-xxx.sh")` subshell pattern.
+- Report pass/fail separately as "Isolation Pass" in TAP output.
+- Clean up temp directory after.
+
+**W2-2: Add isolation assertions to state-writing tests**
+- In test-project-isolation.sh: after each state file write, assert the file path
+  contains the project hash suffix (not bare filename).
+- Pattern: `[[ "$written_path" == *"-${expected_hash}"* ]]` or equivalent.
+- Cover: .proof-status-{hash}, .active-worktree-path-{hash}, .active-{type}-{session}-{hash}.
+- Skip for legitimately global files (.session-start-epoch, .test-status).
+
+**W2-3: Document CWD-independence requirement**
+- Add a comment block to test infrastructure explaining that state-writing tests
+  must not assume CWD == ~/.claude.
+- Add to HOOKS.md under testing guidelines.
+
+##### Critical Files
+- `tests/run-hooks.sh` — Isolation pass addition
+- `tests/test-project-isolation.sh` — Isolation assertions
+- `tests/test-proof-chain.sh` — Isolation assertions
+- `tests/test-proof-gate.sh` — Isolation assertions
+- `hooks/HOOKS.md` — Testing guidelines
+
+##### Decision Log
+<!-- Guardian appends here after phase completion -->
+
+#### Phase 3: Observatory Cross-Project Signal
+**Status:** planned
+**Decision IDs:** DEC-GOV-003
+**Requirements:** REQ-P0-005, REQ-P0-006
+**Issues:** #145
+**Definition of Done:**
+- REQ-P0-005 satisfied: Analyzer detects cross-project state reads in trace data
+- REQ-P0-006 satisfied: Signal surfaces in observatory reports
+
+##### Planned Decisions
+- DEC-GOV-003: Observatory analyzer pattern for cross-project contamination — Addresses: REQ-P0-005, REQ-P0-006
+
+##### Work Items
+
+**W3-1: Add cross-project contamination analyzer**
+- New analyzer function in observatory/analyze.sh (or new file observatory/analyzers/cross-project.sh).
+- Input: trace manifests and session event logs.
+- Detection logic: for each session, extract PROJECT_ROOT hash. Scan session events for
+  state file reads. If any read targets a different project hash, emit signal.
+- Signal format: `{ "type": "cross-project-contamination", "session": "...",
+  "project_hash": "...", "contaminating_hash": "...", "state_file": "...", "severity": "high" }`
+
+**W3-2: Integrate signal into observatory report**
+- Add cross-project contamination to the findings section of observatory reports.
+- Include: affected session, project hashes involved, state files read, timestamp.
+- Severity: always "high" (contamination is never benign).
+
+**W3-3: Add test for cross-project signal**
+- Create synthetic trace data with cross-project state reads.
+- Run analyzer. Assert signal is emitted with correct fields.
+- Add to existing observatory test suite.
+
+##### Critical Files
+- `observatory/analyze.sh` — Analyzer integration point
+- `observatory/analyzers/` — New analyzer (if separate file)
+- `observatory/report.sh` — Report generation
+- `tests/test-obs-pipeline.sh` — Observatory test suite
+
+##### Decision Log
+<!-- Guardian appends here after phase completion -->
+
+#### State Governance Worktree Strategy
+
+Main is sacred. Each phase works in its own worktree:
+- **Phase 1:** `~/.claude/.worktrees/gov-registry` on branch `feature/state-registry`
+- **Phase 2:** `~/.claude/.worktrees/gov-multi-cwd` on branch `feature/multi-cwd-tests`
+- **Phase 3:** `~/.claude/.worktrees/gov-observatory` on branch `feature/cross-project-signal`
+
+Implementation order: Phase 1 first (registry is the structural foundation), then Phase 2
+(tests use registry as reference), then Phase 3 (observatory signal is independent but benefits
+from registry definitions).
+
+#### State Governance References
+
+##### State File Inventory
+| State File | Scope | Writer | Readers |
+|-----------|-------|--------|---------|
+| .proof-status-{phash} | per-project | track.sh, prompt-submit.sh, check-tester.sh | guard.sh, task-track.sh, session-init.sh, session-summary.sh, subagent-start.sh |
+| .proof-status | per-project (legacy) | track.sh, prompt-submit.sh | guard.sh (fallback) |
+| .session-start-epoch | per-session | prompt-submit.sh | session-summary.sh |
+| .active-worktree-path-{phash} | per-project | task-track.sh | task-track.sh, subagent-start.sh |
+| .guardian-start-sha | per-session | subagent-start.sh | check-guardian.sh |
+| .test-status | per-session | test-runner.sh | guard.sh, session-summary.sh, check-implementer.sh |
+| TRACE_STORE/.active-{type}-{session}-{phash} | per-project | context-lib.sh | context-lib.sh, compact-preserve.sh, session-end.sh |
+| sessions/{hash}/index.jsonl | per-project | session-end.sh, context-lib.sh | context-lib.sh, session-init.sh |
+| .session-events.jsonl | per-session | track.sh, guard.sh, checkpoint.sh | context-lib.sh, session-summary.sh |
+
+##### Related Issues
+| Issue | Relation |
+|-------|----------|
+| #115 | Multi-instance plan file scoping (different problem, same isolation domain) |
+| DEC-ISOLATION-001..007 | Prior reactive fixes for cross-project contamination |
 
 ---
 
