@@ -20,7 +20,9 @@ set -euo pipefail
 _HOOKS_DIR="$(dirname "$0")"
 for _lib in source-lib.sh log.sh context-lib.sh; do
     if ! bash -n "$_HOOKS_DIR/$_lib" 2>/dev/null; then
-        _SYNTAX_ERR=$(bash -n "$_HOOKS_DIR/$_lib" 2>&1 | head -3)
+        # Pattern A: avoid bash -n | head -3 SIGPIPE; capture all stderr and truncate in bash
+        _SYNTAX_ERR=$(bash -n "$_HOOKS_DIR/$_lib" 2>&1 || true)
+        _SYNTAX_ERR="${_SYNTAX_ERR:0:500}"  # truncate to ~3 lines worth inline
         _HAS_MARKERS=$(grep -c '^<\{7\}\|^=\{7\}\|^>\{7\}' "$_HOOKS_DIR/$_lib" 2>/dev/null || echo 0)
         _REMEDIATION="Run: bash -n ~/.claude/hooks/$_lib"
         [[ "$_HAS_MARKERS" -gt 0 ]] && _REMEDIATION="Merge conflict markers detected in $_lib. Remove <<<<<<< ======= >>>>>>> lines."
@@ -224,13 +226,21 @@ if [[ "$PLAN_EXISTS" == "true" ]]; then
         # --- New living-document format: tiered injection ---
 
         # 1. Identity section (~10 lines)
-        _IDENTITY=$(awk '/^## Identity/{f=1} f && /^## / && !/^## Identity/{exit} f{print}' \
-            "$_PLAN_FILE" 2>/dev/null | head -15)
+        # @decision DEC-SIGPIPE-001
+        # @title Move head -N limit into awk to prevent SIGPIPE with set -euo pipefail
+        # @status accepted
+        # @rationale `awk ... | head -N` causes SIGPIPE when the section is larger than N
+        #   lines: head closes the pipe after N lines, awk gets SIGPIPE, and set -euo pipefail
+        #   propagates exit 141 killing the hook. Fix: embed the line limit directly in awk
+        #   using a counter (`if(++c<=N) print; else exit`). awk sees EOF normally, no SIGPIPE.
+        #   Applied to all awk|head patterns on MASTER_PLAN.md (Pattern A).
+        _IDENTITY=$(awk '/^## Identity/{f=1} f && /^## / && !/^## Identity/{exit} f{if(++c<=15) print; else exit}' \
+            "$_PLAN_FILE" 2>/dev/null)
         [[ -n "$_IDENTITY" ]] && CONTEXT_PARTS+=("$_IDENTITY")
 
         # 2. Architecture section (~10 lines)
-        _ARCH=$(awk '/^## Architecture/{f=1} f && /^## / && !/^## Architecture/{exit} f{print}' \
-            "$_PLAN_FILE" 2>/dev/null | head -15)
+        _ARCH=$(awk '/^## Architecture/{f=1} f && /^## / && !/^## Architecture/{exit} f{if(++c<=15) print; else exit}' \
+            "$_PLAN_FILE" 2>/dev/null)
         [[ -n "$_ARCH" ]] && CONTEXT_PARTS+=("$_ARCH")
 
         # 3. Active Initiatives: compact summary (REQ-P0-004 — bounded under 250 lines total)
@@ -246,8 +256,9 @@ if [[ "$PLAN_EXISTS" == "true" ]]; then
         #   the 250-line target (REQ-P0-004). T13 caught this with realistic fixtures.
         #   Fix: extract name+status+goal+phase-counts (~5 lines per initiative) rather
         #   than dumping the entire block. Full detail is always available via Read tool.
-        _ACTIVE_HEADER=$(awk '/^## Active Initiatives/{found=1; print; next} found && /^## /{exit} found{print}' \
-            "$_PLAN_FILE" 2>/dev/null | head -3)
+        # Pattern A: limit embedded in awk to avoid SIGPIPE (DEC-SIGPIPE-001)
+        _ACTIVE_HEADER=$(awk '/^## Active Initiatives/{found=1; print; next} found && /^## /{exit} found{if(++c<=3) print; else exit}' \
+            "$_PLAN_FILE" 2>/dev/null)
         [[ -n "$_ACTIVE_HEADER" ]] && CONTEXT_PARTS+=("$_ACTIVE_HEADER")
 
         # Parse each ### Initiative: block for a compact summary
@@ -288,21 +299,29 @@ if [[ "$PLAN_EXISTS" == "true" ]]; then
                     # Phase header — next Status: belongs to this phase
                     _IN_PHASE=true
                 elif [[ -n "$_CUR_INIT" ]]; then
-                    if [[ "$_IN_PHASE" == "true" ]] && echo "$_line" | grep -qE '^\*\*Status:\*\*'; then
+                    # Pattern B: [[ =~ ]] replaces echo "$_line" | grep -qE to avoid SIGPIPE
+                    # (DEC-SIGPIPE-001). Each grep spawns a subshell and pipe; in a tight
+                    # read loop over thousands of lines, any broken pipe propagates exit 141.
+                    # Pattern C: bash parameter expansion replaces echo "$_line" | sed for
+                    # status/goal extraction — no subshell, no pipe, no SIGPIPE risk.
+                    if [[ "$_IN_PHASE" == "true" && "$_line" =~ ^\*\*Status:\*\* ]]; then
                         # Phase-level status — count it
-                        if echo "$_line" | grep -qE '\bplanned\b'; then
+                        if [[ "$_line" =~ [[:space:]]planned([[:space:]]|$) ]]; then
                             _PLANNED_PHASES=$((_PLANNED_PHASES + 1))
-                        elif echo "$_line" | grep -qE '\bin-progress\b'; then
+                        elif [[ "$_line" =~ [[:space:]]in-progress([[:space:]]|$) ]]; then
                             _INPROG_PHASES=$((_INPROG_PHASES + 1))
-                        elif echo "$_line" | grep -qE '\bcompleted\b'; then
+                        elif [[ "$_line" =~ [[:space:]]completed([[:space:]]|$) ]]; then
                             _DONE_PHASES=$((_DONE_PHASES + 1))
                         fi
                         _IN_PHASE=false  # consumed
-                    elif [[ "$_IN_PHASE" == "false" ]] && echo "$_line" | grep -qE '^\*\*Status:\*\*'; then
-                        # Initiative-level status
-                        _CUR_STATUS=$(echo "$_line" | sed 's/\*\*Status:\*\*[[:space:]]*//')
-                    elif echo "$_line" | grep -qE '^\*\*Goal:\*\*'; then
-                        _CUR_GOAL=$(echo "$_line" | sed 's/\*\*Goal:\*\*[[:space:]]*//')
+                    elif [[ "$_IN_PHASE" == "false" && "$_line" =~ ^\*\*Status:\*\* ]]; then
+                        # Initiative-level status — Pattern C: parameter expansion strips prefix
+                        _CUR_STATUS="${_line#\*\*Status:\*\* }"
+                        _CUR_STATUS="${_CUR_STATUS#\*\*Status:\*\*}"
+                    elif [[ "$_line" =~ ^\*\*Goal:\*\* ]]; then
+                        # Pattern C: parameter expansion strips **Goal:** prefix
+                        _CUR_GOAL="${_line#\*\*Goal:\*\* }"
+                        _CUR_GOAL="${_CUR_GOAL#\*\*Goal:\*\*}"
                     fi
                 fi
             done <<< "$_ACTIVE_SECTION"
@@ -321,9 +340,10 @@ if [[ "$PLAN_EXISTS" == "true" ]]; then
         fi
 
         # 5. Completed Initiatives: one-liner table rows only (not full blocks)
-        # || true: grep returns 1 when table is empty; pipefail would kill the script.
-        _COMPLETED_ROWS=$(awk '/^## Completed Initiatives/{f=1} f{print}' \
-            "$_PLAN_FILE" 2>/dev/null | grep -E '^\|' | grep -vE '^\|\s*Initiative\s*\||\|\s*-+\s*\|' | head -60 || true)
+        # Pattern A: limit embedded in awk (c<=60) to avoid SIGPIPE (DEC-SIGPIPE-001).
+        # awk also filters header/separator rows inline, removing the grep|head pipeline.
+        _COMPLETED_ROWS=$(awk '/^## Completed Initiatives/{f=1; next} f && /^\|/ && !/^\|\s*Initiative\s*\|/ && !/\|\s*-+\s*\|/ {if(++c<=60) print; else exit}' \
+            "$_PLAN_FILE" 2>/dev/null || true)
         if [[ -n "$_COMPLETED_ROWS" ]]; then
             _COMPLETED_COUNT=$(echo "$_COMPLETED_ROWS" | wc -l | tr -d ' ')
             CONTEXT_PARTS+=("Completed initiatives (${_COMPLETED_COUNT}):")
@@ -345,7 +365,8 @@ if [[ "$PLAN_EXISTS" == "true" ]]; then
         fi
     else
         # --- Old format: preamble + phase count (backward compatibility) ---
-        PREAMBLE=$(awk '/^---$|^## Original Intent/{exit} {print}' "$_PLAN_FILE" | head -30)
+        # Pattern A: limit embedded in awk to avoid SIGPIPE (DEC-SIGPIPE-001)
+        PREAMBLE=$(awk '/^---$|^## Original Intent/{exit} {if(++c<=30) print; else exit}' "$_PLAN_FILE")
         [[ -n "$PREAMBLE" ]] && CONTEXT_PARTS+=("$PREAMBLE")
 
         if [[ "$PLAN_LIFECYCLE" == "dormant" ]]; then
