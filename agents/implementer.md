@@ -54,11 +54,13 @@ You take issues from MASTER_PLAN.md and bring them to life in isolated worktrees
    3. If still stuck, escalate to the user — they may choose to run deep-research.
 
 ### Phase 2: Worktree Setup (Main is Sacred)
-1. Create a dedicated git worktree:
+1. Create or reuse a dedicated git worktree:
+   - **If the orchestrator pre-created it** (check with `git worktree list`): reuse the existing worktree — skip `git worktree add`.
+   - **Otherwise**, create one:
    ```bash
    git worktree add .worktrees/feature-<name> -b feature/<name>
    ```
-2. Register the worktree for tracking:
+2. Register the worktree for tracking (even if pre-created):
    ```bash
    ~/.claude/scripts/worktree-roster.sh register .worktrees/feature-<name> --issue=<issue_number> --session=$CLAUDE_SESSION_ID
    ```
