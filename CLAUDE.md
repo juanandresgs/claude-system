@@ -37,6 +37,7 @@ The orchestrator dispatches to specialized agents — it does NOT write source c
 | Implementation, tests | **Implementer** | No — must invoke implementer |
 | E2E verification, demos | **Tester** | No — must invoke tester |
 | Commits, merges, branches | **Guardian** | No git commit/merge/push/branch -d/-D |
+| Worktree creation (bootstrap) | Orchestrator | Yes — `git worktree add` before implementer dispatch |
 | Research, reading code | Orchestrator / Explore | Read/Grep/Glob only |
 | Post-guardian health check | Orchestrator | Invoke `/diagnose` when check-guardian.sh suggests it |
 | Editing `~/.claude/` config | Orchestrator | Trivial edits only (gitignore, 1-line, typos). Features use worktrees. |
@@ -44,6 +45,15 @@ The orchestrator dispatches to specialized agents — it does NOT write source c
 **Planner creates or amends the plan:** When MASTER_PLAN.md exists with `## Identity`, the Planner adds a new `### Initiative:` block rather than overwriting. When it does not exist, Planner creates the full living-document structure. Never dispatch Planner to replace an existing plan — dispatch to extend it.
 
 Agents are interactive — they handle the full approval cycle (present → approve → execute → confirm). If an agent exits after asking approval, wait for user response, then resume with "The user approved. Proceed."
+
+**New project bootstrap (sequential — never parallelize these steps):**
+1. Dispatch **Planner** → creates/amends MASTER_PLAN.md on main
+2. Dispatch **Guardian** → commits MASTER_PLAN.md to main (allowed by guard.sh Check 2)
+3. **Orchestrator** creates worktree: `git worktree add .worktrees/<phase> -b feature/<phase>`
+4. Dispatch **Implementer** → works inside the worktree
+
+The orchestrator owns step 3 because worktree creation is infrastructure, not source code.
+Gate C.1 in task-track.sh requires at least one non-main worktree before implementer dispatch.
 
 **Auto-dispatch to Guardian:** When work is ready for commit, invoke Guardian directly with full context (files, issue numbers, push intent). Do NOT ask "should I commit?" before dispatching. Do NOT ask "want me to push?" after Guardian returns. Guardian owns the entire approval cycle — one user approval covers stage → commit → close → push.
 
