@@ -11,6 +11,21 @@
 #   library eliminates drift and reduces maintenance surface. Functions are
 #   exported for subshell access. Cache keyed on HEAD+mod_time for performance.
 #
+# @decision DEC-SIGPIPE-001
+# @title Replace echo|grep and awk|head pipe patterns with SIGPIPE-safe equivalents
+# @status accepted
+# @rationale Under set -euo pipefail, any pipe where the reader closes before the
+#   writer finishes (SIGPIPE) propagates exit 141 and kills the hook. Two patterns
+#   were dangerous: (1) `echo "$var" | grep -qE` in tight while-read loops over
+#   large plan sections — each spawns a subshell+pipe, and on macOS the shell
+#   delivers SIGPIPE to the writer when grep exits early; (2) multi-stage pipes
+#   like `grep | tail | sed | paste` in get_research_status(). Fixes applied:
+#   Pattern B — replace `echo "$_line" | grep -qE 'pat'` with `[[ "$_line" =~ pat ]]`
+#   (no subshell, no pipe). Pattern E — replace multi-stage pipe with a single awk
+#   program that collects, filters, and formats in one process. See DEC-SIGPIPE-001
+#   in session-init.sh for Pattern A (awk|head → inline awk limit) and Pattern C
+#   (echo|sed → bash parameter expansion).
+#
 # Provides:
 #   get_git_state <project_root>     - Populates GIT_BRANCH, GIT_DIRTY_COUNT,
 #                                      GIT_WORKTREES, GIT_WT_COUNT
@@ -127,7 +142,10 @@ get_plan_status() {
         if [[ -n "$_active_section" ]]; then
             local _in_init=false _init_status=""
             while IFS= read -r _line; do
-                if echo "$_line" | grep -qE '^\#\#\#\s+Initiative:'; then
+                # Pattern B: [[ =~ ]] replaces echo "$_line" | grep -qE (DEC-SIGPIPE-001).
+                # Each grep in a tight read loop spawns a subshell+pipe; when the section
+                # is large (1000+ lines), any broken pipe propagates exit 141 under pipefail.
+                if [[ "$_line" =~ ^'###'[[:space:]]+'Initiative:' ]]; then
                     # Finalize previous initiative
                     if [[ "$_in_init" == "true" ]]; then
                         if [[ "$_init_status" == "active" ]]; then
@@ -138,12 +156,13 @@ get_plan_status() {
                     fi
                     _in_init=true
                     _init_status=""
-                elif [[ "$_in_init" == "true" && -z "$_init_status" ]] && \
-                     echo "$_line" | grep -qE '^\*\*Status:\*\*'; then
+                elif [[ "$_in_init" == "true" && -z "$_init_status" && "$_line" =~ ^\*\*Status:\*\* ]]; then
                     # First Status line after the Initiative header is the initiative status
-                    if echo "$_line" | grep -qiE 'active'; then
+                    # Case-insensitive match via [[ =~ ]] — bash 3.2 compatible (no ${var,,}).
+                    # macOS ships bash 3.2 which lacks ,, (lowercase) operator.
+                    if [[ "$_line" =~ [Aa]ctive ]]; then
                         _init_status="active"
-                    elif echo "$_line" | grep -qiE 'completed'; then
+                    elif [[ "$_line" =~ [Cc]ompleted ]]; then
                         _init_status="completed"
                     fi
                 fi
@@ -635,7 +654,21 @@ get_research_status() {
     RESEARCH_EXISTS=true
     RESEARCH_ENTRY_COUNT=$(grep -c '^### \[' "$log" 2>/dev/null || true)
     RESEARCH_ENTRY_COUNT=${RESEARCH_ENTRY_COUNT:-0}
-    RESEARCH_RECENT_TOPICS=$(grep '^### \[' "$log" | tail -3 | sed 's/^### \[[^]]*\] //' | paste -sd ', ' - 2>/dev/null || echo "")
+    # Pattern E: replace grep|tail|sed|paste multi-stage pipe with awk (DEC-SIGPIPE-001).
+    # Multi-stage pipes under set -euo pipefail can SIGPIPE when upstream produces more
+    # output than downstream reads. awk handles the full pipeline in one process: collect
+    # matching lines into an array, print the last 3 joined by ', '.
+    RESEARCH_RECENT_TOPICS=$(awk '/^\#\#\# \[/{
+        # Strip the "### [date] " prefix: remove up to and including first "] "
+        sub(/^\#\#\# \[[^]]*\] /, "")
+        topics[++n] = $0
+    }
+    END {
+        start = (n > 3) ? n - 2 : 1
+        sep = ""
+        for (i = start; i <= n; i++) { printf "%s%s", sep, topics[i]; sep = ", " }
+        print ""
+    }' "$log" 2>/dev/null || echo "")
 }
 
 # --- Constants ---
@@ -2487,18 +2520,19 @@ compress_initiative() {
 
     # Extract the initiative block from Active Initiatives section
     # Block starts at "### Initiative: <name>" and ends before the next "### Initiative:" or "## "
+    # Pattern B: [[ =~ ]] replaces echo "$_line" | grep -qE throughout this function (DEC-SIGPIPE-001).
     local _init_block=""
     local _in_block=false
     local _started_line
     while IFS= read -r _line; do
-        if echo "$_line" | grep -qE "^### Initiative: ${init_name}$"; then
+        if [[ "$_line" == "### Initiative: ${init_name}" ]]; then
             _in_block=true
             _init_block="${_line}"$'\n'
             continue
         fi
         if [[ "$_in_block" == "true" ]]; then
             # Stop at next ### Initiative: or ## section header
-            if echo "$_line" | grep -qE '^### Initiative:|^## '; then
+            if [[ "$_line" =~ ^'### Initiative:'|^'## ' ]]; then
                 break
             fi
             _init_block+="${_line}"$'\n'
@@ -2533,33 +2567,33 @@ compress_initiative() {
     local _appended=false
 
     while IFS= read -r _line; do
-        # Track section boundaries
-        if echo "$_line" | grep -qE '^## Active Initiatives'; then
+        # Track section boundaries — Pattern B: [[ =~ ]] replaces echo|grep-qE (DEC-SIGPIPE-001)
+        if [[ "$_line" == "## Active Initiatives" ]]; then
             _in_active=true
             _in_completed=false
             printf '%s\n' "$_line" >> "$_tmp_file"
             continue
         fi
-        if echo "$_line" | grep -qE '^## Completed Initiatives'; then
+        if [[ "$_line" == "## Completed Initiatives" ]]; then
             _in_active=false
             _in_completed=true
             printf '%s\n' "$_line" >> "$_tmp_file"
             continue
         fi
-        if echo "$_line" | grep -qE '^## ' && ! echo "$_line" | grep -qE '^## Active|^## Completed'; then
+        if [[ "$_line" =~ ^'## ' && "$_line" != "## Active Initiatives" && "$_line" != "## Completed Initiatives" ]]; then
             _in_active=false
             _in_completed=false
         fi
 
         # In Active section: skip the target initiative block
         if [[ "$_in_active" == "true" ]]; then
-            if echo "$_line" | grep -qE "^### Initiative: ${init_name}$"; then
+            if [[ "$_line" == "### Initiative: ${init_name}" ]]; then
                 _skip_block=true
                 continue
             fi
             if [[ "$_skip_block" == "true" ]]; then
-                # End of block: next ### Initiative: or ## section
-                if echo "$_line" | grep -qE '^### Initiative:|^## '; then
+                # End of block: next ### Initiative: or ## section header
+                if [[ "$_line" =~ ^'### Initiative:'|^'## ' ]]; then
                     _skip_block=false
                     # Don't skip this line — it starts the next block
                     printf '%s\n' "$_line" >> "$_tmp_file"
@@ -2569,11 +2603,11 @@ compress_initiative() {
             fi
         fi
 
-        # In Completed section: append compressed row after the table header if not yet done
+        # In Completed section: append compressed row after the table separator if not yet done
         if [[ "$_in_completed" == "true" && "$_appended" == "false" ]]; then
             printf '%s\n' "$_line" >> "$_tmp_file"
-            # After the header row (| --- | line), append the compressed row
-            if echo "$_line" | grep -qE '^\|[-| ]+\|'; then
+            # After the separator row (| --- | line), append the compressed row
+            if [[ "$_line" =~ ^\|[-\ |]+\| ]]; then
                 printf '%s\n' "$_compressed_row" >> "$_tmp_file"
                 _appended=true
             fi
