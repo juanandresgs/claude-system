@@ -122,6 +122,33 @@ write_statusline_cache "$PROJECT_ROOT"
 
 ISSUES=()
 
+# Layer A: Inject trace summary into additionalContext when agent response is empty/minimal.
+# When an agent's final turn is a bare tool call (no accompanying text), Task tool returns
+# empty to the orchestrator. This block surfaces the trace summary via ISSUES so the
+# orchestrator always receives work context via system-reminder, even on silent returns.
+#
+# @decision DEC-SILENT-RETURN-001
+# @title Inject trace summary into ISSUES when agent response is empty or minimal
+# @status accepted
+# @rationale Agents frequently return with no visible output when their last turn is a
+#   bare tool call. The orchestrator sees nothing and loses context. By injecting the
+#   trace summary into the ISSUES array (and thus into additionalContext), the hook
+#   ensures the orchestrator always has a work summary even on silent agent returns.
+#   Threshold of 50 chars catches both empty and trivially short responses like "push it"
+#   (7 chars, confirmed in guardian-20260221-164446-fd27aa). The injection runs first in
+#   ISSUES so it's the most prominent item in the orchestrator's system-reminder.
+if [[ ${#RESPONSE_TEXT} -lt 50 ]]; then
+    _inj_summary=""
+    if [[ -n "$TRACE_DIR" && -f "$TRACE_DIR/summary.md" ]]; then
+        _inj_summary=$(head -c 2000 "$TRACE_DIR/summary.md" 2>/dev/null || echo "")
+    fi
+    if [[ -n "$_inj_summary" ]]; then
+        ISSUES+=("Agent returned minimal response. Trace summary: $_inj_summary")
+    else
+        ISSUES+=("Agent returned no response and no trace summary available. Check git log for what happened.")
+    fi
+fi
+
 # Detect plan completion state from actual plan content (not fragile response text matching)
 get_plan_status "$PROJECT_ROOT"
 

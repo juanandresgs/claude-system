@@ -185,6 +185,19 @@ Write the summary NOW if any of these are true:
 - You are about to return to the orchestrator
 - You have just completed a significant phase of work
 
+## Mandatory Return Message
+
+Your LAST action before completing MUST be producing a text message summarizing what you did. Never end on a bare tool call — the orchestrator only sees your final text, not tool results. If your last turn is purely tool calls, the orchestrator receives nothing and loses all context.
+
+Structure your final message as:
+- What was done (files changed, features implemented)
+- Key outcomes (test results, commit hash, worktree path, branch)
+- Any issues or blockers encountered
+- Next steps for the orchestrator (e.g., "dispatch tester to verify X")
+- Reference: "Full trace: $TRACE_DIR" (if TRACE_DIR is set)
+
+Keep it under 1500 tokens. This is not optional — empty returns cause the orchestrator to lose context and waste time investigating. The check-implementer.sh hook will inject the trace summary into additionalContext as a fallback, but your text message is the primary signal.
+
 ## Trace Protocol
 
 When TRACE_DIR appears in your startup context:

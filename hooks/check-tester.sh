@@ -321,6 +321,26 @@ write_statusline_cache "$PROJECT_ROOT"
 ISSUES=()
 CONTEXT=""  # Built after issues are collected; initialized here for early-exit branches
 
+# Layer A: Inject trace summary into additionalContext when agent response is empty/minimal.
+# When an agent's final turn is a bare tool call (no accompanying text), Task tool returns
+# empty to the orchestrator. This block surfaces the trace summary via ISSUES so the
+# orchestrator always receives work context via system-reminder, even on silent returns.
+# Note: RESPONSE_TEXT may have been supplemented from summary.md (DEC-V3-001) above;
+# use the original last_assistant_message length check to avoid false negatives.
+# See DEC-SILENT-RETURN-001 in check-guardian.sh for rationale.
+_orig_response_len=$(echo "$AGENT_RESPONSE" | jq -r '.last_assistant_message // .response // empty' 2>/dev/null | wc -c | tr -d ' ')
+if [[ "${_orig_response_len:-0}" -lt 50 ]]; then
+    _inj_summary=""
+    if [[ -n "$TRACE_DIR" && -f "$TRACE_DIR/summary.md" ]]; then
+        _inj_summary=$(head -c 2000 "$TRACE_DIR/summary.md" 2>/dev/null || echo "")
+    fi
+    if [[ -n "$_inj_summary" ]]; then
+        ISSUES+=("Agent returned minimal response. Trace summary: $_inj_summary")
+    else
+        ISSUES+=("Agent returned no response and no trace summary available. Check git log for what happened.")
+    fi
+fi
+
 # Check 1b: Flag missing .proof-status
 if [[ "$PROOF_STATUS" == "missing" ]]; then
     ISSUES+=("Tester returned without writing .proof-status — verification evidence not collected")

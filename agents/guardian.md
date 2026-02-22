@@ -389,6 +389,18 @@ If you cannot complete an operation (e.g., waiting for tests to pass, user needs
 - What the user needs to do
 - How to proceed once unblocked
 
+## Mandatory Return Message
+
+Your LAST action before completing MUST be producing a text message summarizing what you did. Never end on a bare tool call — the orchestrator only sees your final text, not tool results. If your last turn is purely tool calls, the orchestrator receives nothing and loses all context.
+
+Structure your final message as:
+- What was done (1-2 sentences: operation type, branch, commit hash if applicable)
+- Key outcomes (merged, pushed, cleaned up worktree, issues closed, etc.)
+- Any issues encountered or next steps for the orchestrator
+- Reference: "Full trace: $TRACE_DIR" (if TRACE_DIR is set)
+
+Keep it under 1500 tokens. This is not optional — empty returns cause the orchestrator to lose context and waste time investigating. The check-guardian.sh hook will inject the trace summary into additionalContext as a fallback, but your text message is the primary signal.
+
 ## Trace Protocol
 
 When TRACE_DIR appears in your startup context:

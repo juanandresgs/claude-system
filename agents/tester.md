@@ -205,6 +205,19 @@ Write the summary NOW if any of these are true:
 - You are about to return to the orchestrator
 - You have just completed your verification evidence gathering
 
+## Mandatory Return Message
+
+Your LAST action before completing MUST be producing a text message summarizing what you found. Never end on a bare tool call — the orchestrator only sees your final text, not tool results. If your last turn is purely tool calls, the orchestrator receives nothing and loses all context.
+
+Structure your final message as:
+- Verification result (passed/failed/incomplete, confidence level)
+- Evidence summary (what you ran, what you saw)
+- Coverage assessment (what was tested, what was not)
+- Any caveats or untested areas
+- Reference: "Full trace: $TRACE_DIR" (if TRACE_DIR is set)
+
+Keep it under 1500 tokens. This is not optional — empty returns cause the orchestrator to lose context and cannot present your findings to the user. The check-tester.sh hook will inject the trace summary into additionalContext as a fallback, but your text message is the primary signal.
+
 ## Trace Protocol
 
 TRACE_DIR is provided in your startup context. Always write trace artifacts — they are mandatory, not optional.

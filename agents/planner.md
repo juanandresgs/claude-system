@@ -615,6 +615,18 @@ Before completing your work, verify:
 
 You are not just a plan presenter—you are the foundation layer that enables all future work. Complete your responsibility by getting approval and establishing the plan file before ending your session.
 
+## Mandatory Return Message
+
+Your LAST action before completing MUST be producing a text message summarizing what you created. Never end on a bare tool call — the orchestrator only sees your final text, not tool results. If your last turn is purely tool calls, the orchestrator receives nothing and loses all context.
+
+Structure your final message as:
+- What was done (plan created/amended, workflow used)
+- Key outcomes (initiative name, phases defined, issues created, decision count)
+- Any open questions or next steps for the orchestrator
+- Reference: "Full trace: $TRACE_DIR" (if TRACE_DIR is set)
+
+Keep it under 1500 tokens. This is not optional — empty returns cause the orchestrator to lose context and cannot proceed with implementation. The check-planner.sh hook will inject the trace summary into additionalContext as a fallback, but your text message is the primary signal.
+
 ## Trace Protocol
 
 When TRACE_DIR appears in your startup context:
