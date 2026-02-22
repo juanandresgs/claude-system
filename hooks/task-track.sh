@@ -67,6 +67,28 @@ if [[ "$AGENT_TYPE" == "guardian" ]]; then
         if [[ "$PROOF_STATUS" != "verified" ]]; then
             deny "Cannot dispatch Guardian: proof-of-work is '$PROOF_STATUS' (requires 'verified'). Dispatch tester or complete verification before dispatching Guardian."
         fi
+        # Proof is verified — pre-create guardian marker to close dispatch race (Issue #151).
+        # track.sh (PostToolUse:Write|Edit) checks .active-guardian-* to skip proof
+        # invalidation during Guardian's merge cycle. Without this, any Write/Edit between
+        # Gate A pass (PreToolUse:Task) and SubagentStart's init_trace() (which normally
+        # creates the marker) fires track.sh which resets proof verified→pending —
+        # deadlocking Guardian at guard.sh Check 8.
+        # Creating the marker HERE (at dispatch time) closes that race window entirely.
+        # init_trace() overwrites with the real trace_id (harmless).
+        # finalize_trace() cleans all .active-guardian-* markers regardless of format.
+        #
+        # @decision DEC-PROOF-RACE-001
+        # @title Pre-create guardian marker in task-track.sh to close dispatch race
+        # @status accepted
+        # @rationale The .active-guardian-* marker was previously only created by
+        #   init_trace() in subagent-start.sh — AFTER the agent spawns. Any source
+        #   file Write between PreToolUse:Task (Gate A pass) and SubagentStart fires
+        #   track.sh, which resets proof verified→pending because no marker exists.
+        #   Creating the marker at Gate A time (PreToolUse:Task) closes this window.
+        #   init_trace() overwrites with the real trace_id (harmless). finalize_trace()
+        #   cleans all markers regardless of format. Fixes #151.
+        _SESSION="${CLAUDE_SESSION_ID:-$$}"
+        echo "pre-dispatch|$(date +%s)" > "${TRACE_STORE}/.active-guardian-${_SESSION}-${_PHASH}"
     fi
     # File missing → no implementation in progress → allow (bootstrap path)
 fi
